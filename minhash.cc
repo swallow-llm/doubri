@@ -66,7 +66,7 @@ int main(int argc, char *argv[])
         .default_value("text")
         .nargs(1);
     program.add_argument("filename").metavar("FILENAME")
-        .help("a prefix of filenames, {FILENAME}.mh.{START}, ... {FILENAME}.mh.{END-1}");
+        .help("a filename to store MinHash buckets");
 
     // Parse the command-line arguments.
     try {
@@ -80,41 +80,33 @@ int main(int argc, char *argv[])
 
     // Retrieve parameters.
     const auto n = program.get<int>("ngram");
+    const uint32_t bytes_per_hash = 4;
     const uint32_t num_hash_values = (uint32_t)program.get<int>("bucket");
-    const auto begin = program.get<int>("start");
-    const auto end = program.get<int>("end");
-    const auto prefix = program.get<std::string>("filename");
+    const uint32_t begin = program.get<int>("start");
+    const uint32_t end = program.get<int>("end");
+    const auto filename = program.get<std::string>("filename");
     const auto field = program.get<std::string>("text");
     const std::string empty(n, '_');
 
     // Open the output file.
-    std::vector<std::ofstream> ofss;
-    for (int i = begin; i < end; ++i) {
-        // Obtain the filename for the bucket #i.
-        std::stringstream ss;
-        ss << prefix << ".mh." << std::setfill('0') << std::setw(5) << i;
-        std::string filename = ss.str();
-
-        // Open the filename for the bucket #i.
-        ofss.emplace_back(std::ofstream{ filename, std::ios::binary });
-
-        // Error check.
-        if (ofss.back().fail()) {
-            es << "ERROR: failed to open " << filename << std::endl;
-            return 1;
-        }
+    std::ofstream ofs(filename, std::ios::binary);
+    if (ofs.fail()) {
+        es << "ERROR: failed to open " << filename << std::endl;
+        return 1;
     }
 
-    for (int i = begin; i < end; ++i) {
-        std::ofstream& ofs = ofss[i-begin];
-
-        // Write the header: "Doubri20"
-        ofs << "Doubri20";        
-        // Reserve the slot to write the number of records.
-        ofs.write(reinterpret_cast<const char*>(&num_records), sizeof(num_records));
-        // Write the number of hash values per bucket.
-        ofs.write(reinterpret_cast<const char*>(&num_hash_values), sizeof(num_hash_values));
-    }
+    // Write the header: "Doubri20"
+    ofs << "Doubri20";        
+    // Reserve the slot to write the number of records.
+    ofs.write(reinterpret_cast<const char*>(&num_records), sizeof(num_records));
+    // Write the number of bytes per hash.
+    ofs.write(reinterpret_cast<const char*>(&bytes_per_hash), sizeof(bytes_per_hash));
+    // Write the number of hash values per bucket.
+    ofs.write(reinterpret_cast<const char*>(&num_hash_values), sizeof(num_hash_values));
+    // Write the begin index of buckets.
+    ofs.write(reinterpret_cast<const char*>(&begin), sizeof(begin));
+    // Write the end index of buckets.
+    ofs.write(reinterpret_cast<const char*>(&end), sizeof(end));
 
     // One JSON object per line.
     for (num_records = 0; ; ++num_records) {
@@ -148,18 +140,14 @@ int main(int argc, char *argv[])
             uint32_t buffer[num_hash_values];
             minhash(features, buffer, i * num_hash_values, num_hash_values);
             // Write the hash values.
-            ofss[i-begin].write(reinterpret_cast<const char*>(buffer), sizeof(buffer));
+            ofs.write(reinterpret_cast<const char*>(buffer), sizeof(buffer));
         }
     }
 
     // Write the number of records in the header.
-    for (int i = begin; i < end; ++i) {
-        std::ofstream& ofs = ofss[i-begin];
-
-        ofs.seekp(8);
-        ofs.write(reinterpret_cast<const char*>(&num_records), sizeof(num_records));
-        ofs.close();
-    }
+    ofs.seekp(8);
+    ofs.write(reinterpret_cast<const char*>(&num_records), sizeof(num_records));
+    ofs.close();
 
     return 0;
 }

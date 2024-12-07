@@ -1,5 +1,5 @@
 /*
-    MinHash calculator.
+    MinHash generator.
 
 Copyright (c) 2023-2024, Naoaki Okazaki
 
@@ -30,7 +30,15 @@ SOFTWARE.
 #include <utf8.h>
 #include "MurmurHash3.h"
 
-void ngram(const std::string& str, std::vector<std::string>& fs, int n)
+/**
+ * Generate n-grams from a UTF-8 string.
+ *  This function generates n-grams in UTF-8 character (not in byte).
+ *
+ *  @param  str     A string.
+ *  @param  ngrams  A vector of strings to store n-grams.
+ *  @param  n       The number of letters (N).
+ */
+void ngram(const std::string& str, std::vector<std::string>& ngrams, int n)
 {
     std::vector<const char *> cs;
     const char *end = str.c_str() + str.size();
@@ -52,22 +60,33 @@ void ngram(const std::string& str, std::vector<std::string>& fs, int n)
         const char *b = cs[i];
         const char *e = cs[i+n];
         std::string s(b, e-b);
-        fs.push_back(s);
+        ngrams.push_back(s);
     }
 }
 
-size_t minhash(const std::vector<std::string> input, uint32_t *output, size_t num)
+/**
+ * Generate MinHash values for given strings.
+ *  This function generates {num} MinHash values (in uint32_t) by using
+ *  hash functions #{begin}, #{begin+1}, ..., #{begin+num}, and write
+ *  MinHash values to the buffer of {num} * uint32_t bytes.
+ *
+ *  @param  strs    A target item represented as strings.
+ *  @param  out     A pointer to the buffer to receive MinHash values.
+ *  @param  begin   A beginning number of hash functions.
+ *  @param  num     A number of MinHash values to generate.
+ */
+void minhash(const std::vector<std::string>& strs, uint32_t *out, size_t begin, size_t num)
 {
     for (size_t i = 0; i < num; ++i) {
+        const size_t seed = begin + i;
         uint32_t min = 0xFFFFFFFF;
-        for (auto it = input.begin(); it != input.end(); ++it) {
+        for (auto it = strs.begin(); it != strs.end(); ++it) {
             uint32_t hv;
-            MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), i, &hv);
+            MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), seed, &hv);
             if (hv < min) {
                 min = hv;
             }
         }
-        output[i] = min;
+        out[i] = min;
     }
-    return sizeof(uint32_t) * num;
 }

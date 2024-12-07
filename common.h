@@ -29,6 +29,8 @@ SOFTWARE.
 #include <string>
 #include <string_view>
 
+#define __DOUBRI_VERSION__ "2.0"
+
 #define BYTE_PER_HASH 4
 #define BUCKET_SIZE 20
 #define BYTE_PER_BUCKET (BYTE_PER_HASH * BUCKET_SIZE)

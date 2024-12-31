@@ -1,5 +1,5 @@
 /*
-    Deduplicate items within a group and output indices.
+    Deduplicate items within a group and output flags and indices.
 
 Copyright (c) 2023-2024, Naoaki Okazaki
 
@@ -24,221 +24,554 @@ SOFTWARE.
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <concepts>
 #include <cstdint>
 #include <cstring>
+#include <compare>
+#include <execution>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
+#include <argparse/argparse.hpp>
+#include <spdlog/spdlog.h>
+#include <spdlog/stopwatch.h>
+#include "common.h"
 
-#define BYTE_PER_HASH 4
-#define BUCKET_SIZE 20
-#define BYTE_PER_BUCKET (BYTE_PER_HASH * BUCKET_SIZE)
-#define NUM_BUCKETS 40
-#define BYTE_PER_RECORD (BYTE_PER_BUCKET * NUM_BUCKETS)
+/**
+ * An item for deduplication.
+ *
+ *  For space efficiency, this program allocates a (huge) array of buckets
+ *  at a time rather than allocating a bucket buffer for each item. The
+ *  static member \c s_buffer stores the pointer to the bucket array and
+ *  the static member \c s_bytes_per_bucket presents the byte per bucket.
+ *  The member \c i presents the index number of the item.
+ */
+struct Item {
+    static uint8_t *s_buffer;
+    static size_t s_bytes_per_bucket;
+    uint32_t i;
 
-typedef std::array<uint8_t, BYTE_PER_BUCKET> bucket_t;
-typedef std::set<bucket_t> BucketSet;
-
-struct kv {
-    std::string _key;
-    std::string _value;
-
-    kv(std::string_view key, std::string_view value)
-        : _key(key)
+    /**
+     * Spaceship operator for comparing buckets and item indices.
+     *
+     * This defines dictionary order of byte streams of buckets. When two
+     * buckets are identical, this uses ascending order of index numbers
+     * to ensure the stability of item order. This treatment is necessary
+     * to mark the same item as duplicates across different trials of
+     * deduplications with different bucket arrays. Calling std::sort()
+     * will sort items in dictionary order of buckets and ascending order
+     * of index numbers.
+     *
+     *  @param  x   An item.
+     *  @param  y   Another item.
+     *  @return std::strong_ordering    The order of the two items.
+     */
+    friend auto operator<=>(const Item& x, const Item& y) -> std::strong_ordering
     {
-        _value = "\"";
-        _value += value;
-        _value += "\"";
+        auto order = std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket);
+        return order == 0 ? (x.i <=> y.i) : (order <=> 0);
     }
-    kv(std::string_view key, size_t value)
-        : _key(key)
+
+    /**
+     * Equality operator for comparing buckets.
+     *
+     * This defines the equality of two buckets. Unlike the operator <=>,
+     * this function does not consider item index numbers for equality.
+
+     *  @param  x   An item.
+     *  @param  y   Another item.
+     *  @return bool    \c true when two items have the same bucket,
+     *                  \c false otherwise.
+     */
+    friend bool operator==(const Item& x, const Item& y)
     {
-        _value = std::to_string(value);
+        return std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket) == 0;
     }
-    kv(std::string_view key, double value)
-        : _key(key)
+
+    /**
+     * Get a pointer to the bucket of the item.
+     *
+     *  @return uint8_t*    The pointer to the bucket in the bucket array.
+     */
+    uint8_t *ptr()
     {
-        _value = std::to_string(value);
+        return s_buffer + i * s_bytes_per_bucket;
+    }
+
+    /**
+     * Get a pointer to the bucket of the item.
+     *
+     *  @return const uint8_t*  The pointer to the bucket in the bucket array.
+     */
+    const uint8_t *ptr() const
+    {
+        return s_buffer + i * s_bytes_per_bucket;
+    }
+
+    /**
+     * Represents an item with the index number and bucket.
+     *
+     *  @return std::string The string representing the item.
+     */
+    std::string repr() const
+    {
+        std::string str = std::format("{:05d}: ", i);
+        for (int j = 0; j < s_bytes_per_bucket; ++j) {
+            str += std::format("{:02X}", *(ptr() + j));
+        }
+        return str;
     }
 };
 
-template <typename CharT, typename Traits>
-decltype(auto) operator<<(std::basic_ostream<CharT, Traits>& os, kv rhs)
+uint8_t *Item::s_buffer = nullptr;
+size_t Item::s_bytes_per_bucket = 0;
+
+struct HashFile {
+    std::string filename;
+    uint32_t num_items;
+
+    HashFile(const std::string& filename = "") : num_items(0), filename(filename)
+    {
+    }
+};
+
+class MinHashLSHException : public std::runtime_error
 {
-    os << '"' << rhs._key << '"' << ": " << rhs._value;
-    return os;
-}
-
-int dedup(const std::string& hash_filename, BucketSet* bs)
-{
-    size_t num_total = 0;
-    size_t num_skips = 0;
-    size_t num_drops = 0;
-    std::ostream& os = std::cout;
-    std::ostream& es = std::cerr;
-
-    // Obtain the name for the flag file.
-    std::string flag_filename(hash_filename);
-    flag_filename += ".f";
-
-    // Open the hash file for reading (binary).
-    std::ifstream ifs(hash_filename, std::ios::binary);
-    if (ifs.fail()) {
-        es << "ERROR: could not open the hash file: " << hash_filename << std::endl;
-        return 1;
+public:
+    MinHashLSHException(const std::string& message = "") : std::runtime_error(message)
+    {
     }
 
-    // Read the header and check consistencies.
-    char magic[8]{};
-    ifs.read(magic, 7);
-    if (std::strcmp(magic, "MinHash") != 0) {
-        es << "ERROR: unrecognized header: " << magic << std::endl;
-        return 1;
+    virtual ~MinHashLSHException()
+    {
+    }
+};
+
+class MinHashLSH {
+public:
+    std::vector<HashFile> m_hfs;
+    uint32_t m_num_items;
+    uint32_t m_bytes_per_hash;
+    uint32_t m_num_hash_values;
+    uint32_t m_begin;
+    uint32_t m_end;
+
+protected:
+    uint8_t* m_buffer;
+    std::vector<Item> m_items;
+    std::vector<char> m_flags;
+
+public:
+    MinHashLSH() :
+        m_num_items(0), m_bytes_per_hash(0), m_num_hash_values(0),
+        m_begin(0), m_end(0), m_buffer(nullptr)
+    {
     }
 
-    // Check the consistency of size_t;
-    uint8_t byte_per_hash;
-    ifs.read(reinterpret_cast<char*>(&byte_per_hash), 1);
-    if (byte_per_hash != 4) {
-        es << "ERROR: Hash size is not 4 bytes but " << byte_per_hash << std::endl;
-        return 1;
+    virtual ~MinHashLSH()
+    {
+        clear();
     }
 
-    // Read the number of records.
-    size_t num_records;
-    ifs.read(reinterpret_cast<char*>(&num_records), sizeof(num_records));
-
-    // Read the number of hash values per record.
-    size_t num_hash_values_per_record;
-    ifs.read(reinterpret_cast<char*>(&num_hash_values_per_record), sizeof(num_hash_values_per_record));
-    if (num_hash_values_per_record != BUCKET_SIZE * NUM_BUCKETS) {
-        es << "ERROR: Hash size is not 4 bytes but " << byte_per_hash << std::endl;
-        return 1;
-    }
-    
-    // Open the flag file for reading/writing.
-    std::fstream fs(flag_filename, std::ios::in | std::ios::out);
-    if (fs.fail()) {
-        es << "ERROR: could not open the flag file: " << flag_filename << std::endl;
-        return 1;
-    }
-
-    // For each record in the flag file.
-    for (size_t lineno = 0; lineno < num_records; ++lineno) {
-        // Read a flag.
-        char flag = fs.get();
-        if (fs.eof()) {
-            es << "ERROR: premature end of the flag file" << std::endl;
-            return 1;
+    void clear()
+    {
+        if (m_buffer) {
+            delete[] m_buffer;
+            m_buffer = nullptr;
         }
+        m_items.clear();
+        m_flags.clear();
+    }
 
-        ++num_total;
+    void append_file(const std::string& filename)
+    {
+        m_hfs.push_back(HashFile(filename));
+    }
 
-        // Do nothing if the record has already been removed.
-        bool skip = false;
-        if (flag == '0') {
-            skip = true;
-            ++num_skips;
-        } else if (flag != '1') {
-            es << "ERROR: a flag must be either '0' or '1': " << flag << std::endl;
-            return 1;
-        }
+    void initialize()
+    {
+        // Initialize the parameters.
+        m_num_items = 0;
+        m_bytes_per_hash = 0;
+        m_num_hash_values = 0;
+        m_begin = 0;
+        m_end = 0;
 
-        // Read the hash values of the record.
-        bucket_t buckets[NUM_BUCKETS];
-        for (size_t i = 0;i < NUM_BUCKETS; ++i) {
-            ifs.read(reinterpret_cast<char*>(buckets[i].data()), buckets[i].size());
-            if (ifs.eof()) {
-                es << "ERROR: failed to read the hash value" << std::endl;
-                return 1;
+        // Open the hash files to retrieve parameters.
+        for (auto& hf : m_hfs) {
+            spdlog::info("Open a hash file: {}", hf.filename);
+
+            // Open the hash file.
+            std::ifstream ifs(hf.filename, std::ios::binary);
+            if (ifs.fail()) {
+                spdlog::critical("Failed to open a hash file: {}", hf.filename);
+                throw MinHashLSHException();
             }
-        }        
+
+            // Check the header.
+            char magic[9]{};
+            ifs.read(magic, 8);
+            if (std::strcmp(magic, "DoubriH4") != 0) {
+                spdlog::critical("Unrecognized header '{}'", magic);
+                throw MinHashLSHException();
+            }
+
+            // Read the parameters in the hash file.
+            uint32_t num_items = 0;
+            uint32_t bytes_per_hash = 0;
+            uint32_t num_hash_values = 0;
+            uint32_t begin = 0;
+            uint32_t end = 0;
+            ifs.read(reinterpret_cast<char*>(&num_items), sizeof(num_items));
+            ifs.read(reinterpret_cast<char*>(&bytes_per_hash), sizeof(bytes_per_hash));
+            ifs.read(reinterpret_cast<char*>(&num_hash_values), sizeof(num_hash_values));
+            ifs.read(reinterpret_cast<char*>(&begin), sizeof(begin));
+            ifs.read(reinterpret_cast<char*>(&end), sizeof(end));
+
+            // Store the parameters of the first file or check the cnosistency of other files.
+            if (m_bytes_per_hash == 0) {
+                // This is the first file.
+                m_num_items = num_items;
+                m_bytes_per_hash = bytes_per_hash;
+                m_num_hash_values = num_hash_values;
+                m_begin = begin;
+                m_end = end;
+                spdlog::info("bytes_per_hash: {}", m_bytes_per_hash);
+                spdlog::info("num_hash_values: {}", m_num_hash_values);
+                spdlog::info("begin: {}", m_begin);
+                spdlog::info("end: {}", m_end);
+            } else {
+                // Check the consistency of the parameters.
+                if (m_bytes_per_hash != bytes_per_hash) {
+                    spdlog::critical("Inconsistent parameter, bytes_per_hash: {}", bytes_per_hash);
+                    throw MinHashLSHException();
+                }
+                if (m_num_hash_values != num_hash_values) {
+                    spdlog::critical("Inconsistent parameter, num_hash_values: {}", num_hash_values);
+                    throw MinHashLSHException();
+                }
+                if (m_begin != begin) {
+                    spdlog::critical("Inconsistent parameter, begin: {}", begin);
+                    throw MinHashLSHException();
+                }
+                if (m_end != end) {
+                    spdlog::critical("Inconsistent parameter, end: {}", end);
+                    throw MinHashLSHException();
+                }
+                m_num_items += num_items;
+            }
+            hf.num_items = num_items;
+        }
+
+        spdlog::info("num_items: {}", m_num_items);
+
+        // Clear existing arrays.
+        clear();
+
+        // Allocate an array for buckets (this can be huge).
+        size_t size = m_bytes_per_hash * m_num_hash_values * m_num_items;
+        spdlog::info("Allocate an array for buckets ({:.3f} MB)", size / 1000000.);
+        m_buffer = new uint8_t[size];
+
+        // Allocate an index for buckets.
+        spdlog::info("Allocate an array for items");
+        m_items.resize(m_num_items);
+
+        // Allocate an array for non-duplicate flags.
+        spdlog::info("Allocate an array for flags");
+        m_flags.resize(m_num_items, ' ');
+
+        // Set static members of Item to access the bucket array.
+        Item::s_buffer = m_buffer;
+        Item::s_bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
+    }
+
+    void load_flag(const std::string& filename)
+    {
+        spdlog::info("Load flags from a file: {}", filename);
+
+        // Open the flag file.
+        std::ifstream ifs(filename);
+        if (ifs.fail()) {
+            spdlog::critical("Failed to open a flag file");
+            throw MinHashLSHException();
+        }
+
+        // Check the size of the flag file.
+        ifs.seekg(0, std::ios::end);
+        auto filesize = ifs.tellg();
+        if (filesize != m_num_items) {
+            spdlog::critical("Number of elements is diffeerent");
+            throw MinHashLSHException();
+        }
+        ifs.seekg(0, std::ios::beg);
+
+        // Read the flags.
+        ifs.read(reinterpret_cast<std::ifstream::char_type*>(&m_flags.front()), filesize);
+
+        // Check whether the flags are properly read.
+        if (ifs.eof() || ifs.fail()) {
+            spdlog::critical("Failed to read the content of the flag file");
+            throw MinHashLSHException();
+        }
+    }
+
+    void save_flag(const std::string& filename)
+    {
+        spdlog::info("Save flags to a file: {}", filename);
+
+        // Open the flag file.
+        std::ofstream ofs(filename);
+        if (ofs.fail()) {
+            spdlog::critical("Failed to open a flag file");
+            throw MinHashLSHException();
+        }
+
+        // Write the flags.
+        ofs.write(reinterpret_cast<std::ifstream::char_type*>(&m_flags.front()), m_flags.size());
+
+        // Check whether the flags are properly read.
+        if (ofs.fail()) {
+            spdlog::critical("Failed to write the flags to a file.");
+            throw MinHashLSHException();
+        }
+    }
+
+    void deduplicate_bucket(uint32_t bucket_number, const std::string& basename, bool save_index = true, bool parallel = false)
+    {
+        spdlog::info("Start deduplication for #{}", bucket_number);
+
+        const uint32_t bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
+        const uint32_t bytes_per_item = bytes_per_bucket * (m_end - m_begin);
+        const uint32_t offset_bucket = bytes_per_bucket * (bucket_number - m_begin);
+
+        // Read MinHash buckets from files.
+        uint32_t i = 0;
+        for (auto& hf : m_hfs) {
+            // Open the hash file.
+            std::ifstream ifs(hf.filename, std::ios::binary);
+            if (ifs.fail()) {
+                spdlog::critical("Failed to open the hash file: {}", hf.filename);
+                throw MinHashLSHException();
+            }
+
+            // Read the buckets at #bucket_number.
+            spdlog::info("Read {} buckets for #{}", hf.num_items, bucket_number);
+            for (uint32_t j = 0; j < hf.num_items; ++j) {
+                m_items[i].i = i;
+                ifs.seekg(32 + bytes_per_item * j + offset_bucket);
+                ifs.read(reinterpret_cast<char*>(m_items[i].ptr()), bytes_per_bucket);
+                ++i;
+            }
+
+            // Check whether the hash values are properly read.
+            if (ifs.eof() || ifs.fail()) {
+                spdlog::critical("Failed to read the content of the hash file");
+                throw MinHashLSHException();
+            }
+        }
+
+        // Sort the buckets of items.
+        spdlog::stopwatch sw;
+        if (parallel) {
+            spdlog::info("Sort buckets (multi-thread, vectorized)");
+            std::sort(std::execution::par_unseq, m_items.begin(), m_items.end());
+        } else {
+            spdlog::info("Sort buckets (single-thread)");
+            std::sort(std::execution::seq, m_items.begin(), m_items.end());
+        }
+        spdlog::info("Completed sorting in {:.3} seconds", sw);
+
+        // Debugging the code.
+        // for (auto it = m_items.begin(); it != m_items.end(); ++it) {
+        //     std::cout << it->repr() << std::endl;
+        // }
+
+        // Count the number of inactive items.
+        uint32_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
+
+        // Find duplicated items.
+        for (auto cur = m_items.begin(); cur != m_items.end(); ) {
+            // Find the next item that has a different bucket from the current one.
+            auto next = cur + 1;
+            while (next != m_items.end() && *cur == *next) {
+                ++next;
+            }
+            // Mark a duplication flag for every item with the same bucket.
+            for (++cur; cur != next; ++cur) {
+                //std::cout << std::format("Duplication: {}", cur->i) << std::endl;
+                // Mark the item with a local duplicate flag (within this trial).
+                m_flags[cur->i] = 'd';
+            }
+        }
+
+        // Count the number of active and detected (as duplicates) items.
+        uint32_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
+        uint32_t num_detected = std::count(m_flags.begin(), m_flags.end(), 'd');
+
+        // Save the index.
+        if (save_index) {
+            // Open the index file.
+            const std::string filename = std::format("{0}.{1:05d}", basename, bucket_number);
+            std::ofstream ofs(filename);
+            if (ofs.fail()) {
+                spdlog::critical("Failed to open an index file");
+                throw MinHashLSHException();
+            }
+
+            // Write the index to the file.
+            for (auto it = m_items.begin(); it != m_items.end(); ++it) {
+                // Write items that are non duplicates in this trial.
+                if (m_flags[it->i] != 'd') {
+                    ofs.write(reinterpret_cast<const char*>(&it->i), sizeof(it->i));
+                    ofs.write(reinterpret_cast<const char*>(it->ptr()), bytes_per_bucket);
+                }
+            }
+        }
+
+        // Change local duplicate flags into global ones.
+        for (auto it = m_flags.begin(); it != m_flags.end(); ++it) {
+            *it = std::toupper(*it);    // 'd' -> 'D'.
+        }
+
+        // Report statistics.
+        double active_ratio = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;
+        double detection_ratio = 0 < m_num_items ? num_detected / (double)m_num_items : 0.;
+        spdlog::info(
+            "Completed for #{}: {{"
+            "\"num_active_before\": {}, "
+            "\"num_detected\": {}, "
+            "\"num_active_after\": {}, "
+            "\"active_ratio\": {:.05f}, "
+            "\"detection_ratio\": {:.05f}"
+            "}}",
+            bucket_number,
+            num_active_before,
+            num_detected,
+            num_active_after,
+            active_ratio,
+            detection_ratio
+            );
+    }
+
+    void run(const std::string& basename, bool save_index = true, bool parallel = false)
+    {
+        spdlog::stopwatch sw;
+        uint32_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
         
-        // Check if the hash value is seen before.
-	bool drop = false;
-        if (!skip) {
-            for (size_t i = 0;i < NUM_BUCKETS; ++i) {
-                if (bs[i].find(buckets[i]) != bs[i].end()) {
-                    // Drop this record.
-                    fs.seekp(-1, std::ios_base::cur);
-                    fs.put('0');
-		    drop = true;
-                    ++num_drops;
-                    break;
-                }
-            }
-            // Set the buckets.
-            if (!drop) {
-	        for (size_t i = 0;i < NUM_BUCKETS; ++i) {
-                    bs[i].insert(buckets[i]);
-                }
-	    }
+        for (uint32_t bn = m_begin; bn < m_end; ++bn) {
+            deduplicate_bucket(bn, basename, save_index, parallel);
         }
+        
+        uint32_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
+        double active_ratio_before = 0 < m_num_items ? num_active_before / (double)m_num_items : 0.;
+        double active_ratio_after = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;
+        // Report overall statistics.
+        spdlog::info(
+            "Result: {{"
+            "\"num_items\": {}, "
+            "\"bytes_per_hash\": {}, "
+            "\"num_hash_values\": {}, "
+            "\"begin\": {}, "
+            "\"end\": {}, "
+            "\"num_active_before\": {}, "
+            "\"num_active_after\": {}, "
+            "\"active_ratio_before\": {:.05f}, "
+            "\"active_ratio_after\": {:.05f}, "
+            "\"time\": {:.3f}"
+            "}}",
+            m_num_items,
+            m_bytes_per_hash,
+            m_num_hash_values,
+            m_begin,
+            m_end,
+            num_active_before,
+            num_active_after,
+            active_ratio_before,
+            active_ratio_after,
+            sw
+            );
     }
-
-    // Report the stat to STDOUT.
-    size_t num_active = num_total - num_skips - num_drops;
-    auto pos = hash_filename.find_last_of('/');
-    if (pos == std::string::npos) {
-        pos = 0;
-    } else {
-        ++pos;
-    }
-    std::string target(hash_filename, pos);
-    
-    os << '{' <<
-        kv("target", target) << ", " <<
-        kv("num_total", num_total) << ", " <<
-        kv("num_active", num_active) << ", " <<
-        kv("num_skips", num_skips) << ", " <<
-        kv("num_drops", num_drops) << ", " <<
-        kv("active_rate", num_active / (double)num_total) << ", " <<
-        kv("drop_rate", num_drops / (double)num_total) <<
-        '}' << std::endl;
-
-    return 0;
-}
+};
 
 int main(int argc, char *argv[])
 {
-    std::istream& is = std::cin;
-    std::ostream& os = std::cout;
-    std::ostream& es = std::cerr;
-    std::string index_filename(argv[1]);
-    
-    std::set<bucket_t> bs[NUM_BUCKETS];
+    // Build a command-line parser.
+    argparse::ArgumentParser program("doubri-self", __DOUBRI_VERSION__);
+    program.add_description("Read MinHash buckets from files, deduplicate items, build bucket indices.");
+    program.add_argument("-p", "--parallel")
+        .help("uses parallel sort for speed up")
+        .flag();
+    program.add_argument("--ignore-flag")
+        .help("does not read an existing flag file before deduplication")
+        .flag();
+    program.add_argument("--no-index")
+        .help("does not save index files after deduplication")
+        .flag();
+    program.add_argument("basename").metavar("BASENAME")
+        .help("basename for index (.#####) and flag (.dup) files");
+
+    // Parse the command-line arguments.
+    try {
+        program.parse_args(argc, argv);
+    }
+    catch (const std::exception& e) {
+        std::cerr << e.what() << std::endl;
+        std::cerr << program;
+        return 1;
+    }
+
+    // Retrieve parameters.
+    const auto basename = program.get<std::string>("basename");
+    const auto ignore_flag = program.get<bool>("ignore-flag");
+    const auto no_index = program.get<bool>("no-index");
+    const auto parallel = program.get<bool>("parallel");
+    const std::string flagfile = basename + std::string(".dup");
+
+    // The deduplication object.
+    MinHashLSH dedup;
+
+    // One MinHash file per line.
     for (;;) {
-        // Read a source file.
+        // Read a line from STDIN.
         std::string line;
-        std::getline(is, line);
-        if (is.eof()) {
+        std::getline(std::cin, line);
+        if (std::cin.eof()) {
             break;
         }
-        // Run deduplication for the file.
-        dedup(line, bs);
+        // Register the MinHash file.
+        dedup.append_file(line);
     }
 
-    // Save the index (sorted buckets) to files.
-    for (size_t i = 0; i < NUM_BUCKETS; ++i) {
-        // Open the index file.
-        std::ostringstream oss;
-        oss << index_filename << '.'
-            << std::setw(5) << std::setfill('0') << i;
-        std::ofstream ofs(oss.str(), std::ios::binary);
-        if (ofs.fail()) {
-            es << "ERROR: could not open the index file: " << index_filename << std::endl;
-            return 1;
-        }
+    // Read the MinHash files to initialize the deduplication engine.
+    dedup.initialize();
 
-        // Write the index file (sorted buckets).
-        for (auto it = bs[i].begin(); it != bs[i].end(); ++it) {
-            ofs.write(reinterpret_cast<const char*>(it->data()), it->size());
+    // Load the flag file.
+    if (!ignore_flag) {
+        // Load the flag file if it exists.
+        std::ifstream ifs(flagfile);
+        if (!ifs.fail()) {
+            ifs.close();
+            dedup.load_flag(flagfile);
+        } else {
+            spdlog::info("Flag file does not exists: {}", flagfile);
         }
+    } else {
+        spdlog::info("The user instructed to ignore a flag file");
     }
+
+    // Perform deduplication.
+    dedup.run(basename, !no_index, parallel);
+
+    // Store the flag file.
+    dedup.save_flag(flagfile);
 
     return 0;
 }

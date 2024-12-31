@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#include <bit>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -39,34 +40,36 @@ using json = nlohmann::json;
 
 int main(int argc, char *argv[])
 {
-    uint64_t num_records = 0;
+    uint32_t num_items = 0;
+    const uint32_t zero = 0;
     std::istream& is = std::cin;
     std::ostream& os = std::cout;
     std::ostream& es = std::cerr;
-    argparse::ArgumentParser program("doubri-minhash", __DOUBRI_VERSION__);
 
+    argparse::ArgumentParser program("doubri-minhash", __DOUBRI_VERSION__);
+    program.add_description("Read text (in JSONL format) from STDIN and compute MinHash buckets.");
     program.add_argument("-n", "--ngram").metavar("N")
-        .help("the number of letters of an n-gram")
+        .help("number of letters of an n-gram")
         .default_value(5)
         .nargs(1);
     program.add_argument("-b", "--bucket").metavar("HASHNUM")
-        .help("the number of hash values per bucket")
+        .help("number of hash values per bucket")
         .default_value(20)
         .nargs(1);
     program.add_argument("-s", "--start").metavar("START")
-        .help("the start number of buckets")
+        .help("start number of buckets")
         .default_value(0)
         .nargs(1);
     program.add_argument("-r", "--end").metavar("END")
-        .help("the end number of buckets (the number of buckets when START = 0)")
+        .help("end number of buckets (number of buckets when START = 0)")
         .default_value(40)
         .nargs(1);
     program.add_argument("-t", "--text").metavar("TEXT")
-        .help("the text field in JSON")
+        .help("text field in JSON")
         .default_value("text")
         .nargs(1);
     program.add_argument("filename").metavar("FILENAME")
-        .help("a filename to store MinHash buckets");
+        .help("filename where MinHash buckets will be stored");
 
     // Parse the command-line arguments.
     try {
@@ -95,10 +98,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Write the header: "Doubri20"
-    ofs << "Doubri20";        
-    // Reserve the slot to write the number of records.
-    ofs.write(reinterpret_cast<const char*>(&num_records), sizeof(num_records));
+    // Write the header: "DoubriH4"
+    ofs.write("DoubriH4", 8);
+    // Reserve the slot to write the number of items.
+    ofs.write(reinterpret_cast<const char*>(&num_items), sizeof(num_items));
     // Write the number of bytes per hash.
     ofs.write(reinterpret_cast<const char*>(&bytes_per_hash), sizeof(bytes_per_hash));
     // Write the number of hash values per bucket.
@@ -107,9 +110,11 @@ int main(int argc, char *argv[])
     ofs.write(reinterpret_cast<const char*>(&begin), sizeof(begin));
     // Write the end index of buckets.
     ofs.write(reinterpret_cast<const char*>(&end), sizeof(end));
+    // Write a zero for four bytes (reserved).
+    ofs.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
 
     // One JSON object per line.
-    for (num_records = 0; ; ++num_records) {
+    for (num_items = 0; ; ++num_items) {
         // Read a line from STDIN.
         std::string line;
         std::getline(is, line);
@@ -139,14 +144,22 @@ int main(int argc, char *argv[])
             // Compute min-hash values.
             uint32_t buffer[num_hash_values];
             minhash(features, buffer, i * num_hash_values, num_hash_values);
+            // We store MinHash values in big endian so that we can easily
+            // check byte streams with a binary editor (for debugging).
+            if constexpr (std::endian::native == std::endian::little) {
+                // Change the byte order of the hash values to big endian.
+                for (int j = 0; j < num_hash_values; ++j) {
+                    buffer[j] = std::byteswap(buffer[j]);
+                }
+            }
             // Write the hash values.
             ofs.write(reinterpret_cast<const char*>(buffer), sizeof(buffer));
         }
     }
 
-    // Write the number of records in the header.
+    // Write the number of items in the header.
     ofs.seekp(8);
-    ofs.write(reinterpret_cast<const char*>(&num_records), sizeof(num_records));
+    ofs.write(reinterpret_cast<const char*>(&num_items), sizeof(num_items));
     ofs.close();
 
     return 0;

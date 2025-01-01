@@ -47,6 +47,7 @@ SOFTWARE.
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/stopwatch.h>
+#include <tbb/parallel_sort.h>
 
 #include "common.h"
 
@@ -212,7 +213,7 @@ public:
         m_end = 0;
 
         // Open the hash files to retrieve parameters.
-	    m_logger.info("Read the headers of {} hash files", m_hfs.size());
+        m_logger.info("# hash files: {}", m_hfs.size());
         for (auto& hf : m_hfs) {
             hf.start_index = m_num_items;
 
@@ -274,7 +275,7 @@ public:
             hf.num_items = num_items;
         }
 
-        m_logger.info("num_items: {}", m_num_items);
+        m_logger.info("# items: {}", m_num_items);
 
         // Clear existing arrays.
         clear();
@@ -357,6 +358,8 @@ public:
         const size_t offset_bucket = bytes_per_bucket * (bucket_number - m_begin);
 
         // Read MinHash buckets from files.
+        spdlog::stopwatch sw_read;
+        m_logger.info("Read buckets #{} from {} files", bucket_number, m_hfs.size());
 #pragma omp parallel for
         for (size_t k = 0; k < m_hfs.size(); ++k) {
             auto& hf = m_hfs[k];
@@ -388,17 +391,19 @@ public:
                 throw MinHashLSHException();
             }
         }
+        m_logger.info("Completed reading in {:.3f} seconds", sw_read);
 
         // Sort the buckets of items.
-        spdlog::stopwatch sw;
+        spdlog::stopwatch sw_sort;
         if (parallel) {
-            m_logger.info("Sort buckets (multi-thread, vectorized)");
-            std::sort(std::execution::par_unseq, m_items.begin(), m_items.end());
+            m_logger.info("Sort buckets (multi-thread)");
+            tbb::parallel_sort(m_items.begin(), m_items.end());
+            //std::stable_sort(std::execution::par, m_items.begin(), m_items.end());
         } else {
             m_logger.info("Sort buckets (single-thread)");
-            std::sort(std::execution::seq, m_items.begin(), m_items.end());
+            std::stable_sort(std::execution::seq, m_items.begin(), m_items.end());
         }
-        m_logger.info("Completed sorting in {:.3} seconds", sw);
+        m_logger.info("Completed sorting in {:.3f} seconds", sw_sort);
 
         // Debugging the code.
         // for (auto it = m_items.begin(); it != m_items.end(); ++it) {

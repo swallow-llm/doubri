@@ -210,8 +210,9 @@ public:
         m_end = 0;
 
         // Open the hash files to retrieve parameters.
+	m_logger.info("Read {} hash files to count the total number of items", m_hfs.size());
         for (auto& hf : m_hfs) {
-            m_logger.info("Open a hash file: {}", hf.filename);
+            m_logger.trace("Open a hash file: {}", hf.filename);
 
             // Open the hash file.
             std::ifstream ifs(hf.filename, std::ios::binary);
@@ -363,7 +364,7 @@ public:
             }
 
             // Read the buckets at #bucket_number.
-            m_logger.info("Read {} buckets from {} for #{}", hf.num_items, hf.filename, bucket_number);
+            m_logger.trace("Read {} buckets from {} for #{}", hf.num_items, hf.filename, bucket_number);
             for (size_t j = 0; j < hf.num_items; ++j) {
                 m_items[i].i = i;
                 ifs.seekg(32 + bytes_per_item * j + offset_bucket);

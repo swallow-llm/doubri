@@ -69,22 +69,22 @@ decltype(auto) operator<<(std::basic_ostream<CharT, Traits>& os, kv rhs)
     return os;
 }
 
-template <typename T>
-inline void write_value(std::ostream& os, int value)
+template <typename StreamT, typename ValueT>
+inline void write_value(std::ostream& os, ValueT value)
 {
-    T value_ = static_cast<T>(value);
-    if (static_cast<int>(value_) != value) {
+    StreamT value_ = static_cast<StreamT>(value);
+    if (static_cast<ValueT>(value_) != value) {
         std::stringstream ss;
-        ss << "Impossible to store " << value << " in " << sizeof(T) << " bytes";
+        ss << "Impossible to store " << value << " in " << sizeof(StreamT) << " bytes";
         throw std::range_error(ss.str());
     }
     os.write(reinterpret_cast<char*>(&value_), sizeof(value_));
 }
 
-template <typename T>
-inline int read_value(std::istream& is)
+template <typename StreamT, typename ValueT>
+inline ValueT read_value(std::istream& is)
 {
-    T value_;
+    StreamT value_;
     is.read(reinterpret_cast<char*>(&value_), sizeof(value_));
-    return static_cast<int>(value_);
+    return static_cast<ValueT>(value_);
 }

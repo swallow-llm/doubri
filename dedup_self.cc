@@ -32,6 +32,7 @@ SOFTWARE.
 #include <execution>
 #include <fstream>
 #include <iomanip>
+#include <ios>
 #include <iostream>
 #include <set>
 #include <sstream>
@@ -39,9 +40,13 @@ SOFTWARE.
 #include <string>
 #include <string_view>
 #include <vector>
+
 #include <argparse/argparse.hpp>
 #include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/stopwatch.h>
+
 #include "common.h"
 
 /**
@@ -122,11 +127,12 @@ struct Item {
      */
     std::string repr() const
     {
-        std::string str = std::format("{:05d}: ", i);
+        std::stringstream ss;
+        ss << std::setfill('0') << std::setw(5) << i;
         for (int j = 0; j < s_bytes_per_bucket; ++j) {
-            str += std::format("{:02X}", *(ptr() + j));
+            ss << std::setfill('0') << std::setw(2) << std::ios::hex << *(ptr() + j);
         }
-        return str;
+        return ss.str();
     }
 };
 
@@ -135,9 +141,9 @@ size_t Item::s_bytes_per_bucket = 0;
 
 struct HashFile {
     std::string filename;
-    uint32_t num_items;
+    uint32_t num_items{0};
 
-    HashFile(const std::string& filename = "") : num_items(0), filename(filename)
+    HashFile(const std::string& filename = "") : filename(filename)
     {
     }
 };
@@ -157,21 +163,20 @@ public:
 class MinHashLSH {
 public:
     std::vector<HashFile> m_hfs;
-    uint32_t m_num_items;
-    uint32_t m_bytes_per_hash;
-    uint32_t m_num_hash_values;
-    uint32_t m_begin;
-    uint32_t m_end;
+    uint32_t m_num_items{0};
+    uint32_t m_bytes_per_hash{0};
+    uint32_t m_num_hash_values{0};
+    uint32_t m_begin{0};
+    uint32_t m_end{0};
 
 protected:
-    uint8_t* m_buffer;
+    uint8_t* m_buffer{nullptr};
     std::vector<Item> m_items;
     std::vector<char> m_flags;
+    spdlog::logger& m_logger;
 
 public:
-    MinHashLSH() :
-        m_num_items(0), m_bytes_per_hash(0), m_num_hash_values(0),
-        m_begin(0), m_end(0), m_buffer(nullptr)
+    MinHashLSH(spdlog::logger& logger) : m_logger(logger)
     {
     }
 
@@ -206,12 +211,12 @@ public:
 
         // Open the hash files to retrieve parameters.
         for (auto& hf : m_hfs) {
-            spdlog::info("Open a hash file: {}", hf.filename);
+            m_logger.info("Open a hash file: {}", hf.filename);
 
             // Open the hash file.
             std::ifstream ifs(hf.filename, std::ios::binary);
             if (ifs.fail()) {
-                spdlog::critical("Failed to open a hash file: {}", hf.filename);
+                m_logger.critical("Failed to open a hash file: {}", hf.filename);
                 throw MinHashLSHException();
             }
 
@@ -219,7 +224,7 @@ public:
             char magic[9]{};
             ifs.read(magic, 8);
             if (std::strcmp(magic, "DoubriH4") != 0) {
-                spdlog::critical("Unrecognized header '{}'", magic);
+                m_logger.critical("Unrecognized header '{}'", magic);
                 throw MinHashLSHException();
             }
 
@@ -243,26 +248,26 @@ public:
                 m_num_hash_values = num_hash_values;
                 m_begin = begin;
                 m_end = end;
-                spdlog::info("bytes_per_hash: {}", m_bytes_per_hash);
-                spdlog::info("num_hash_values: {}", m_num_hash_values);
-                spdlog::info("begin: {}", m_begin);
-                spdlog::info("end: {}", m_end);
+                m_logger.info("bytes_per_hash: {}", m_bytes_per_hash);
+                m_logger.info("num_hash_values: {}", m_num_hash_values);
+                m_logger.info("begin: {}", m_begin);
+                m_logger.info("end: {}", m_end);
             } else {
                 // Check the consistency of the parameters.
                 if (m_bytes_per_hash != bytes_per_hash) {
-                    spdlog::critical("Inconsistent parameter, bytes_per_hash: {}", bytes_per_hash);
+                    m_logger.critical("Inconsistent parameter, bytes_per_hash: {}", bytes_per_hash);
                     throw MinHashLSHException();
                 }
                 if (m_num_hash_values != num_hash_values) {
-                    spdlog::critical("Inconsistent parameter, num_hash_values: {}", num_hash_values);
+                    m_logger.critical("Inconsistent parameter, num_hash_values: {}", num_hash_values);
                     throw MinHashLSHException();
                 }
                 if (m_begin != begin) {
-                    spdlog::critical("Inconsistent parameter, begin: {}", begin);
+                    m_logger.critical("Inconsistent parameter, begin: {}", begin);
                     throw MinHashLSHException();
                 }
                 if (m_end != end) {
-                    spdlog::critical("Inconsistent parameter, end: {}", end);
+                    m_logger.critical("Inconsistent parameter, end: {}", end);
                     throw MinHashLSHException();
                 }
                 m_num_items += num_items;
@@ -270,22 +275,22 @@ public:
             hf.num_items = num_items;
         }
 
-        spdlog::info("num_items: {}", m_num_items);
+        m_logger.info("num_items: {}", m_num_items);
 
         // Clear existing arrays.
         clear();
 
         // Allocate an array for buckets (this can be huge).
         size_t size = m_bytes_per_hash * m_num_hash_values * m_num_items;
-        spdlog::info("Allocate an array for buckets ({:.3f} MB)", size / 1000000.);
+        m_logger.info("Allocate an array for buckets ({:.3f} MB)", size / 1000000.);
         m_buffer = new uint8_t[size];
 
         // Allocate an index for buckets.
-        spdlog::info("Allocate an array for items");
+        m_logger.info("Allocate an array for items");
         m_items.resize(m_num_items);
 
         // Allocate an array for non-duplicate flags.
-        spdlog::info("Allocate an array for flags");
+        m_logger.info("Allocate an array for flags");
         m_flags.resize(m_num_items, ' ');
 
         // Set static members of Item to access the bucket array.
@@ -295,12 +300,12 @@ public:
 
     void load_flag(const std::string& filename)
     {
-        spdlog::info("Load flags from a file: {}", filename);
+        m_logger.info("Load flags from a file: {}", filename);
 
         // Open the flag file.
         std::ifstream ifs(filename);
         if (ifs.fail()) {
-            spdlog::critical("Failed to open a flag file");
+            m_logger.critical("Failed to open a flag file");
             throw MinHashLSHException();
         }
 
@@ -308,7 +313,7 @@ public:
         ifs.seekg(0, std::ios::end);
         auto filesize = ifs.tellg();
         if (filesize != m_num_items) {
-            spdlog::critical("Number of elements is diffeerent");
+            m_logger.critical("Number of elements is diffeerent");
             throw MinHashLSHException();
         }
         ifs.seekg(0, std::ios::beg);
@@ -318,19 +323,19 @@ public:
 
         // Check whether the flags are properly read.
         if (ifs.eof() || ifs.fail()) {
-            spdlog::critical("Failed to read the content of the flag file");
+            m_logger.critical("Failed to read the content of the flag file");
             throw MinHashLSHException();
         }
     }
 
     void save_flag(const std::string& filename)
     {
-        spdlog::info("Save flags to a file: {}", filename);
+        m_logger.info("Save flags to a file: {}", filename);
 
         // Open the flag file.
         std::ofstream ofs(filename);
         if (ofs.fail()) {
-            spdlog::critical("Failed to open a flag file");
+            m_logger.critical("Failed to open a flag file");
             throw MinHashLSHException();
         }
 
@@ -339,14 +344,14 @@ public:
 
         // Check whether the flags are properly read.
         if (ofs.fail()) {
-            spdlog::critical("Failed to write the flags to a file.");
+            m_logger.critical("Failed to write the flags to a file.");
             throw MinHashLSHException();
         }
     }
 
     void deduplicate_bucket(uint32_t bucket_number, const std::string& basename, bool save_index = true, bool parallel = false)
     {
-        spdlog::info("Start deduplication for #{}", bucket_number);
+        m_logger.info("Start deduplication for #{}", bucket_number);
 
         const uint32_t bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
         const uint32_t bytes_per_item = bytes_per_bucket * (m_end - m_begin);
@@ -358,12 +363,12 @@ public:
             // Open the hash file.
             std::ifstream ifs(hf.filename, std::ios::binary);
             if (ifs.fail()) {
-                spdlog::critical("Failed to open the hash file: {}", hf.filename);
+                m_logger.critical("Failed to open the hash file: {}", hf.filename);
                 throw MinHashLSHException();
             }
 
             // Read the buckets at #bucket_number.
-            spdlog::info("Read {} buckets for #{}", hf.num_items, bucket_number);
+            m_logger.info("Read {} buckets from {} for #{}", hf.num_items, hf.filename, bucket_number);
             for (uint32_t j = 0; j < hf.num_items; ++j) {
                 m_items[i].i = i;
                 ifs.seekg(32 + bytes_per_item * j + offset_bucket);
@@ -372,8 +377,12 @@ public:
             }
 
             // Check whether the hash values are properly read.
-            if (ifs.eof() || ifs.fail()) {
-                spdlog::critical("Failed to read the content of the hash file");
+            if (ifs.eof()) {
+                m_logger.critical("Premature EOF of the hash file: {}", hf.filename);
+                throw MinHashLSHException();
+            }
+            if (ifs.eof()) {
+                m_logger.critical("Failed to read the content of the hash file: {}", hf.filename);
                 throw MinHashLSHException();
             }
         }
@@ -381,13 +390,13 @@ public:
         // Sort the buckets of items.
         spdlog::stopwatch sw;
         if (parallel) {
-            spdlog::info("Sort buckets (multi-thread, vectorized)");
+            m_logger.info("Sort buckets (multi-thread, vectorized)");
             std::sort(std::execution::par_unseq, m_items.begin(), m_items.end());
         } else {
-            spdlog::info("Sort buckets (single-thread)");
+            m_logger.info("Sort buckets (single-thread)");
             std::sort(std::execution::seq, m_items.begin(), m_items.end());
         }
-        spdlog::info("Completed sorting in {:.3} seconds", sw);
+        m_logger.info("Completed sorting in {:.3} seconds", sw);
 
         // Debugging the code.
         // for (auto it = m_items.begin(); it != m_items.end(); ++it) {
@@ -406,7 +415,7 @@ public:
             }
             // Mark a duplication flag for every item with the same bucket.
             for (++cur; cur != next; ++cur) {
-                //std::cout << std::format("Duplication: {}", cur->i) << std::endl;
+                //std::cout << "Duplication: " << cur->i << std::endl;
                 // Mark the item with a local duplicate flag (within this trial).
                 m_flags[cur->i] = 'd';
             }
@@ -419,10 +428,12 @@ public:
         // Save the index.
         if (save_index) {
             // Open the index file.
-            const std::string filename = std::format("{0}.{1:05d}", basename, bucket_number);
+            std::stringstream ss;
+            ss << basename << std::setfill('0') << std::setw(5) << bucket_number;
+            const std::string filename = ss.str();
             std::ofstream ofs(filename);
             if (ofs.fail()) {
-                spdlog::critical("Failed to open an index file");
+                m_logger.critical("Failed to open an index file: {}", filename);
                 throw MinHashLSHException();
             }
 
@@ -444,7 +455,7 @@ public:
         // Report statistics.
         double active_ratio = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;
         double detection_ratio = 0 < m_num_items ? num_detected / (double)m_num_items : 0.;
-        spdlog::info(
+        m_logger.info(
             "Completed for #{}: {{"
             "\"num_active_before\": {}, "
             "\"num_detected\": {}, "
@@ -473,8 +484,8 @@ public:
         uint32_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
         double active_ratio_before = 0 < m_num_items ? num_active_before / (double)m_num_items : 0.;
         double active_ratio_after = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;
-        // Report overall statistics.
-        spdlog::info(
+        // Report overall stFatistics.
+        m_logger.info(
             "Result: {{"
             "\"num_items\": {}, "
             "\"bytes_per_hash\": {}, "
@@ -501,20 +512,52 @@ public:
     }
 };
 
+auto translate_log_level(const std::string& level)
+{
+    if (level == "off") {
+        return spdlog::level::off;
+    } else if (level == "trace") {
+        return spdlog::level::trace;
+    } else if (level == "debug") {
+        return spdlog::level::debug;
+    } else if (level == "info") {
+        return spdlog::level::info;
+    } else if (level == "warning") {
+        return spdlog::level::warn;
+    } else if (level == "error") {
+        return spdlog::level::err;
+    } else if (level == "critical") {
+        return spdlog::level::critical;
+    } else {
+        std::string msg = std::string("Unknown log level: ") + level;
+        throw std::invalid_argument(msg);
+    }
+}
+
 int main(int argc, char *argv[])
 {
     // Build a command-line parser.
     argparse::ArgumentParser program("doubri-self", __DOUBRI_VERSION__);
-    program.add_description("Read MinHash buckets from files, deduplicate items, build bucket indices.");
+    program.add_description("Read MinHash buckets from files, deduplicate items, and build bucket indices.");
     program.add_argument("-p", "--parallel")
-        .help("uses parallel sort for speed up")
+        .help("uses multi-thread sorting for speed up")
         .flag();
-    program.add_argument("--ignore-flag")
-        .help("does not read an existing flag file before deduplication")
+    program.add_argument("-f", "--ignore-flag")
+        .help("ignores existing flags to cold-start deduplication")
         .flag();
-    program.add_argument("--no-index")
+    program.add_argument("-n", "--no-index")
         .help("does not save index files after deduplication")
         .flag();
+    program.add_argument("-l", "--log-console-level")
+        .help("sets a log level for console")
+        .default_value(std::string{"warning"})
+        .choices("off", "trace", "debug", "info", "warning", "error", "critical")
+        .nargs(1);
+    program.add_argument("-L", "--log-file-level")
+        .help("sets a log level for file logging ({BASENAME}.log.txt)")
+        .default_value(std::string{"off"})
+        .choices("off", "trace", "debug", "info", "warning", "error", "critical")
+        .nargs(1);
     program.add_argument("basename").metavar("BASENAME")
         .help("basename for index (.#####) and flag (.dup) files");
 
@@ -534,9 +577,17 @@ int main(int argc, char *argv[])
     const auto no_index = program.get<bool>("no-index");
     const auto parallel = program.get<bool>("parallel");
     const std::string flagfile = basename + std::string(".dup");
+    const std::string logfile = basename + std::string(".log.txt");
+
+    // Initialize the console logger.
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    console_sink->set_level(translate_log_level(program.get<std::string>("log-console-level")));
+    auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
+    file_sink->set_level(translate_log_level(program.get<std::string>("log-file-level")));
+    spdlog::logger logger("doubri-self", {console_sink, file_sink});
 
     // The deduplication object.
-    MinHashLSH dedup;
+    MinHashLSH dedup(logger);
 
     // One MinHash file per line.
     for (;;) {
@@ -561,10 +612,10 @@ int main(int argc, char *argv[])
             ifs.close();
             dedup.load_flag(flagfile);
         } else {
-            spdlog::info("Flag file does not exists: {}", flagfile);
+            logger.info("Flag file does not exists: {}", flagfile);
         }
     } else {
-        spdlog::info("The user instructed to ignore a flag file");
+        logger.info("The user instructed to ignore a flag file");
     }
 
     // Perform deduplication.

@@ -61,7 +61,7 @@ SOFTWARE.
 struct Item {
     static uint8_t *s_buffer;
     static size_t s_bytes_per_bucket;
-    uint32_t i;
+    int i;
 
     /**
      * Spaceship operator for comparing buckets and item indices.
@@ -129,7 +129,7 @@ struct Item {
     {
         std::stringstream ss;
         ss << std::setfill('0') << std::setw(5) << i;
-        for (int j = 0; j < s_bytes_per_bucket; ++j) {
+        for (size_t j = 0; j < s_bytes_per_bucket; ++j) {
             ss << std::setfill('0') << std::setw(2) << std::ios::hex << *(ptr() + j);
         }
         return ss.str();
@@ -141,7 +141,7 @@ size_t Item::s_bytes_per_bucket = 0;
 
 struct HashFile {
     std::string filename;
-    uint32_t num_items{0};
+    int num_items{0};
 
     HashFile(const std::string& filename = "") : filename(filename)
     {
@@ -163,11 +163,11 @@ public:
 class MinHashLSH {
 public:
     std::vector<HashFile> m_hfs;
-    uint32_t m_num_items{0};
-    uint32_t m_bytes_per_hash{0};
-    uint32_t m_num_hash_values{0};
-    uint32_t m_begin{0};
-    uint32_t m_end{0};
+    int m_num_items{0};
+    int m_bytes_per_hash{0};
+    int m_num_hash_values{0};
+    int m_begin{0};
+    int m_end{0};
 
 protected:
     uint8_t* m_buffer{nullptr};
@@ -229,16 +229,11 @@ public:
             }
 
             // Read the parameters in the hash file.
-            uint32_t num_items = 0;
-            uint32_t bytes_per_hash = 0;
-            uint32_t num_hash_values = 0;
-            uint32_t begin = 0;
-            uint32_t end = 0;
-            ifs.read(reinterpret_cast<char*>(&num_items), sizeof(num_items));
-            ifs.read(reinterpret_cast<char*>(&bytes_per_hash), sizeof(bytes_per_hash));
-            ifs.read(reinterpret_cast<char*>(&num_hash_values), sizeof(num_hash_values));
-            ifs.read(reinterpret_cast<char*>(&begin), sizeof(begin));
-            ifs.read(reinterpret_cast<char*>(&end), sizeof(end));
+            int num_items = read_value<uint32_t>(ifs);
+            int bytes_per_hash = read_value<uint32_t>(ifs);
+            int num_hash_values = read_value<uint32_t>(ifs);
+            int begin = read_value<uint32_t>(ifs);
+            int end = read_value<uint32_t>(ifs);
 
             // Store the parameters of the first file or check the cnosistency of other files.
             if (m_bytes_per_hash == 0) {
@@ -349,16 +344,16 @@ public:
         }
     }
 
-    void deduplicate_bucket(uint32_t bucket_number, const std::string& basename, bool save_index = true, bool parallel = false)
+    void deduplicate_bucket(int bucket_number, const std::string& basename, bool save_index = true, bool parallel = false)
     {
         m_logger.info("Start deduplication for #{}", bucket_number);
 
-        const uint32_t bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
-        const uint32_t bytes_per_item = bytes_per_bucket * (m_end - m_begin);
-        const uint32_t offset_bucket = bytes_per_bucket * (bucket_number - m_begin);
+        const int bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
+        const int bytes_per_item = bytes_per_bucket * (m_end - m_begin);
+        const int offset_bucket = bytes_per_bucket * (bucket_number - m_begin);
 
         // Read MinHash buckets from files.
-        uint32_t i = 0;
+        int i = 0;
         for (auto& hf : m_hfs) {
             // Open the hash file.
             std::ifstream ifs(hf.filename, std::ios::binary);
@@ -369,7 +364,7 @@ public:
 
             // Read the buckets at #bucket_number.
             m_logger.info("Read {} buckets from {} for #{}", hf.num_items, hf.filename, bucket_number);
-            for (uint32_t j = 0; j < hf.num_items; ++j) {
+            for (int j = 0; j < hf.num_items; ++j) {
                 m_items[i].i = i;
                 ifs.seekg(32 + bytes_per_item * j + offset_bucket);
                 ifs.read(reinterpret_cast<char*>(m_items[i].ptr()), bytes_per_bucket);
@@ -404,7 +399,7 @@ public:
         // }
 
         // Count the number of inactive items.
-        uint32_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
+        int num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
         // Find duplicated items.
         for (auto cur = m_items.begin(); cur != m_items.end(); ) {
@@ -422,8 +417,8 @@ public:
         }
 
         // Count the number of active and detected (as duplicates) items.
-        uint32_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
-        uint32_t num_detected = std::count(m_flags.begin(), m_flags.end(), 'd');
+        int num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
+        int num_detected = std::count(m_flags.begin(), m_flags.end(), 'd');
 
         // Save the index.
         if (save_index) {
@@ -475,13 +470,13 @@ public:
     void run(const std::string& basename, bool save_index = true, bool parallel = false)
     {
         spdlog::stopwatch sw;
-        uint32_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
+        int num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
         
-        for (uint32_t bn = m_begin; bn < m_end; ++bn) {
+        for (int bn = m_begin; bn < m_end; ++bn) {
             deduplicate_bucket(bn, basename, save_index, parallel);
         }
         
-        uint32_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
+        int num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
         double active_ratio_before = 0 < m_num_items ? num_active_before / (double)m_num_items : 0.;
         double active_ratio_after = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;
         // Report overall stFatistics.

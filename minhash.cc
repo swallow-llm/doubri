@@ -28,20 +28,24 @@ SOFTWARE.
 #include <iomanip>
 #include <iostream>
 #include <string>
-#include <string_view>
 #include <vector>
+
 #include <utf8.h>
 #include <nlohmann/json.hpp>
 #include <argparse/argparse.hpp>
+
 #include "common.h"
 #include "minhash.h"
+
+//#if !defined(std::byteswap)
+//#include "biteswap.hpp"
+//#endif
 
 using json = nlohmann::json;
 
 int main(int argc, char *argv[])
 {
-    uint32_t num_items = 0;
-    const uint32_t zero = 0;
+    int num_items = 0;
     std::istream& is = std::cin;
     std::ostream& os = std::cout;
     std::ostream& es = std::cerr;
@@ -50,24 +54,31 @@ int main(int argc, char *argv[])
     program.add_description("Read text (in JSONL format) from STDIN and compute MinHash buckets.");
     program.add_argument("-n", "--ngram").metavar("N")
         .help("number of letters of an n-gram")
+        .nargs(1)
         .default_value(5)
-        .nargs(1);
+        .scan<'d', int>();
     program.add_argument("-b", "--bucket").metavar("HASHNUM")
         .help("number of hash values per bucket")
+        .nargs(1)
         .default_value(20)
-        .nargs(1);
+        .scan<'d', int>();
     program.add_argument("-s", "--start").metavar("START")
         .help("start number of buckets")
+        .nargs(1)
         .default_value(0)
-        .nargs(1);
+        .scan<'d', int>();
     program.add_argument("-r", "--end").metavar("END")
         .help("end number of buckets (number of buckets when START = 0)")
+        .nargs(1)
         .default_value(40)
-        .nargs(1);
+        .scan<'d', int>();
     program.add_argument("-t", "--text").metavar("TEXT")
         .help("text field in JSON")
-        .default_value("text")
-        .nargs(1);
+        .nargs(1)
+        .default_value("text");
+    program.add_argument("-q", "--quiet")
+        .help("suppresss messages from the program")
+        .flag();
     program.add_argument("filename").metavar("FILENAME")
         .help("filename where MinHash buckets will be stored");
 
@@ -81,37 +92,51 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Retrieve parameters.
-    const auto n = program.get<int>("ngram");
-    const uint32_t bytes_per_hash = 4;
-    const uint32_t num_hash_values = (uint32_t)program.get<int>("bucket");
-    const uint32_t begin = program.get<int>("start");
-    const uint32_t end = program.get<int>("end");
+    // Retrieve parameters from the command-line arguments.
+    const int n = program.get<int>("ngram");
+    const int bytes_per_hash = 4;
+    const int num_hash_values = program.get<int>("bucket");
+    const int begin = program.get<int>("start");
+    const int end = program.get<int>("end");
+    const bool quiet = program.get<bool>("quiet");
     const auto filename = program.get<std::string>("filename");
     const auto field = program.get<std::string>("text");
     const std::string empty(n, '_');
 
+    // Show the parameters.
+    if (!quiet) {
+        os << "n: " << n << std::endl;
+        os << "bytes_per_hash: " << bytes_per_hash << std::endl;
+        os << "num_hash_values: " << num_hash_values << std::endl;
+        os << "begin: " << begin << std::endl;
+        os << "end: " << end << std::endl;
+    }
+
     // Open the output file.
     std::ofstream ofs(filename, std::ios::binary);
     if (ofs.fail()) {
-        es << "ERROR: failed to open " << filename << std::endl;
+        es << "ERROR: failed to open: " << filename << std::endl;
         return 1;
     }
 
     // Write the header: "DoubriH4"
     ofs.write("DoubriH4", 8);
     // Reserve the slot to write the number of items.
-    ofs.write(reinterpret_cast<const char*>(&num_items), sizeof(num_items));
+    write_value<uint32_t>(ofs, num_items);
     // Write the number of bytes per hash.
-    ofs.write(reinterpret_cast<const char*>(&bytes_per_hash), sizeof(bytes_per_hash));
+    write_value<uint32_t>(ofs, bytes_per_hash);
     // Write the number of hash values per bucket.
-    ofs.write(reinterpret_cast<const char*>(&num_hash_values), sizeof(num_hash_values));
+    write_value<uint32_t>(ofs, num_hash_values);
     // Write the begin index of buckets.
-    ofs.write(reinterpret_cast<const char*>(&begin), sizeof(begin));
+    write_value<uint32_t>(ofs, begin);
     // Write the end index of buckets.
-    ofs.write(reinterpret_cast<const char*>(&end), sizeof(end));
+    write_value<uint32_t>(ofs, end);
     // Write a zero for four bytes (reserved).
-    ofs.write(reinterpret_cast<const char*>(&zero), sizeof(zero));
+    write_value<uint32_t>(ofs, 0);
+    if (ofs.fail()) {
+        es << "ERROR: failed to write a header: " << filename << std::endl;
+        return 1;
+    }
 
     // One JSON object per line.
     for (num_items = 0; ; ++num_items) {
@@ -154,13 +179,25 @@ int main(int argc, char *argv[])
             }
             // Write the hash values.
             ofs.write(reinterpret_cast<const char*>(buffer), sizeof(buffer));
+            if (ofs.fail()) {
+                es << "ERROR: failed to write a hash value: " << filename << std::endl;
+                return 1;
+            }
         }
     }
 
     // Write the number of items in the header.
     ofs.seekp(8);
-    ofs.write(reinterpret_cast<const char*>(&num_items), sizeof(num_items));
-    ofs.close();
+    write_value<uint32_t>(ofs, num_items);
+    if (ofs.fail()) {
+        es << "ERROR: failed to write the number of items: " << filename << std::endl;
+        return 1;
+    }
+
+    // Show the number of items.
+    if (!quiet) {
+        os << "num_items: " << num_items << std::endl;
+    }
 
     return 0;
 }

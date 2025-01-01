@@ -27,7 +27,7 @@ SOFTWARE.
 #include <array>
 #include <cstdint>
 #include <string>
-#include <string_view>
+#include <stdexcept>
 
 #define __DOUBRI_VERSION__ "2.0"
 
@@ -67,4 +67,24 @@ decltype(auto) operator<<(std::basic_ostream<CharT, Traits>& os, kv rhs)
 {
     os << '"' << rhs._key << '"' << ": " << rhs._value;
     return os;
+}
+
+template <typename T>
+inline void write_value(std::ostream& os, int value)
+{
+    T value_ = static_cast<T>(value);
+    if (static_cast<int>(value_) != value) {
+        std::stringstream ss;
+        ss << "Impossible to store " << value << " in " << sizeof(T) << " bytes";
+        throw std::range_error(ss.str());
+    }
+    os.write(reinterpret_cast<char*>(&value_), sizeof(value_));
+}
+
+template <typename T>
+inline int read_value(std::istream& is)
+{
+    T value_;
+    is.read(reinterpret_cast<char*>(&value_), sizeof(value_));
+    return static_cast<int>(value_);
 }

@@ -1,7 +1,7 @@
 /*
     Deduplicate items within a group and output flags and indices.
 
-Copyright (c) 2023-2024, Naoaki Okazaki
+Copyright (c) 2023-2025, Naoaki Okazaki
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -40,6 +40,7 @@ SOFTWARE.
 #include <string>
 #include <string_view>
 #include <vector>
+#include <omp.h>
 
 #include <argparse/argparse.hpp>
 #include <spdlog/spdlog.h>
@@ -142,6 +143,7 @@ size_t Item::s_bytes_per_bucket = 0;
 struct HashFile {
     std::string filename;
     size_t num_items{0};
+    size_t start_index{0};
 
     HashFile(const std::string& filename = "") : filename(filename)
     {
@@ -210,11 +212,12 @@ public:
         m_end = 0;
 
         // Open the hash files to retrieve parameters.
-	m_logger.info("Read {} hash files to count the total number of items", m_hfs.size());
+	    m_logger.info("Read the headers of {} hash files", m_hfs.size());
         for (auto& hf : m_hfs) {
-            m_logger.trace("Open a hash file: {}", hf.filename);
+            hf.start_index = m_num_items;
 
             // Open the hash file.
+            m_logger.trace("Open a hash file: {}", hf.filename);
             std::ifstream ifs(hf.filename, std::ios::binary);
             if (ifs.fail()) {
                 m_logger.critical("Failed to open a hash file: {}", hf.filename);
@@ -354,8 +357,11 @@ public:
         const size_t offset_bucket = bytes_per_bucket * (bucket_number - m_begin);
 
         // Read MinHash buckets from files.
-        size_t i = 0;
-        for (auto& hf : m_hfs) {
+#pragma omp parallel for
+        for (size_t k = 0; k < m_hfs.size(); ++k) {
+            auto& hf = m_hfs[k];
+            size_t i = hf.start_index;
+
             // Open the hash file.
             std::ifstream ifs(hf.filename, std::ios::binary);
             if (ifs.fail()) {

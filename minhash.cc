@@ -1,7 +1,7 @@
 /*
     MinHash generator.
 
-Copyright (c) 2023-2024, Naoaki Okazaki
+Copyright (c) 2023-2025, Naoaki Okazaki
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -111,6 +111,7 @@ int main(int argc, char *argv[])
     std::ostream& os = std::cout;
     std::ostream& es = std::cerr;
 
+    // The command-line parser.
     argparse::ArgumentParser program("doubri-minhash", __DOUBRI_VERSION__);
     program.add_description("Read text (in JSONL format) from STDIN and compute MinHash buckets.");
     program.add_argument("-n", "--ngram").metavar("N")
@@ -226,6 +227,7 @@ int main(int argc, char *argv[])
         std::vector<std::string> features;
         ngram(text, features, n);
 
+        // Generate buckets from #{begin} to #{end-1}.
         for (int i = begin; i < end; ++i) {
             // Compute min-hash values.
             uint32_t buffer[num_hash_values];

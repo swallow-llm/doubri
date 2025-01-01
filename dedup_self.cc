@@ -40,7 +40,6 @@ SOFTWARE.
 #include <string>
 #include <string_view>
 #include <vector>
-#include <omp.h>
 
 #include <argparse/argparse.hpp>
 #include <spdlog/spdlog.h>
@@ -48,6 +47,7 @@ SOFTWARE.
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/stopwatch.h>
 #include <tbb/parallel_sort.h>
+#include <tbb/parallel_for_each.h>
 
 #include "common.h"
 
@@ -360,11 +360,10 @@ public:
         // Read MinHash buckets from files.
         spdlog::stopwatch sw_read;
         m_logger.info("Read buckets #{} from {} files", bucket_number, m_hfs.size());
-#pragma omp parallel for
-        for (size_t k = 0; k < m_hfs.size(); ++k) {
-            auto& hf = m_hfs[k];
-            size_t i = hf.start_index;
 
+        tbb::parallel_for_each(m_hfs.begin(), m_hfs.end(), [&](HashFile& hf) {
+            size_t i = hf.start_index;
+            
             // Open the hash file.
             std::ifstream ifs(hf.filename, std::ios::binary);
             if (ifs.fail()) {
@@ -389,8 +388,8 @@ public:
             if (ifs.eof()) {
                 m_logger.critical("Failed to read the content of the hash file: {}", hf.filename);
                 throw MinHashLSHException();
-            }
-        }
+            }             
+        });
         m_logger.info("Completed reading in {:.3f} seconds", sw_read);
 
         // Sort the buckets of items.
@@ -401,7 +400,7 @@ public:
             //std::stable_sort(std::execution::par, m_items.begin(), m_items.end());
         } else {
             m_logger.info("Sort buckets (single-thread)");
-            std::stable_sort(std::execution::seq, m_items.begin(), m_items.end());
+            std::sort(m_items.begin(), m_items.end());
         }
         m_logger.info("Completed sorting in {:.3f} seconds", sw_sort);
 
@@ -411,7 +410,7 @@ public:
         // }
 
         // Count the number of inactive items.
-        int num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
+        size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
         // Find duplicated items.
         for (auto cur = m_items.begin(); cur != m_items.end(); ) {
@@ -448,7 +447,7 @@ public:
             for (auto it = m_items.begin(); it != m_items.end(); ++it) {
                 // Write items that are non duplicates in this trial.
                 if (m_flags[it->i] != 'd') {
-                    ofs.write(reinterpret_cast<const char*>(&it->i), sizeof(it->i));
+                    write_value<uint64_t>(ofs, it->i);
                     ofs.write(reinterpret_cast<const char*>(it->ptr()), bytes_per_bucket);
                 }
             }

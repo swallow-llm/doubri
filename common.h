@@ -28,6 +28,7 @@ SOFTWARE.
 #include <cstdint>
 #include <string>
 #include <stdexcept>
+#include <sstream>
 
 #define __DOUBRI_VERSION__ "2.0"
 

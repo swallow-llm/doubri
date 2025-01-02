@@ -286,11 +286,11 @@ public:
         m_buffer = new uint8_t[size];
 
         // Allocate an index for buckets.
-        m_logger.info("Allocate an array for items");
+        m_logger.info("Allocate an array for items ({:.3f} MB)", m_num_items * sizeof(Item) / 1000000.);
         m_items.resize(m_num_items);
 
         // Allocate an array for non-duplicate flags.
-        m_logger.info("Allocate an array for flags");
+        m_logger.info("Allocate an array for flags ({:.3f} MB)", m_num_items * sizeof(char) / 1000000.);
         m_flags.resize(m_num_items, ' ');
 
         // Set static members of Item to access the bucket array.
@@ -351,15 +351,15 @@ public:
 
     void deduplicate_bucket(size_t bucket_number, const std::string& basename, bool save_index = true, bool parallel = false)
     {
-        m_logger.info("Start deduplication for #{}", bucket_number);
-
+        spdlog::stopwatch sw;
+        
         const size_t bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
         const size_t bytes_per_item = bytes_per_bucket * (m_end - m_begin);
         const size_t offset_bucket = bytes_per_bucket * (bucket_number - m_begin);
 
         // Read MinHash buckets from files.
         spdlog::stopwatch sw_read;
-        m_logger.info("Read buckets #{} from {} files", bucket_number, m_hfs.size());
+        m_logger.info("[#{}] Read buckets from {} files", bucket_number, m_hfs.size());
 
         tbb::parallel_for_each(m_hfs.begin(), m_hfs.end(), [&](HashFile& hf) {
             size_t i = hf.start_index;
@@ -372,7 +372,7 @@ public:
             }
 
             // Read the buckets at #bucket_number.
-            m_logger.trace("Read {} buckets from {} for #{}", hf.num_items, hf.filename, bucket_number);
+            m_logger.trace("[#{}] Read {} buckets from {}", bucket_number, hf.num_items, hf.filename);
             for (size_t j = 0; j < hf.num_items; ++j) {
                 m_items[i].i = i;
                 ifs.seekg(32 + bytes_per_item * j + offset_bucket);
@@ -390,19 +390,19 @@ public:
                 throw MinHashLSHException();
             }             
         });
-        m_logger.info("Completed reading in {:.3f} seconds", sw_read);
+        m_logger.info("[#{}] Completed reading in {:.3f} seconds", bucket_number, sw_read);
 
         // Sort the buckets of items.
         spdlog::stopwatch sw_sort;
         if (parallel) {
-            m_logger.info("Sort buckets (multi-thread)");
+            m_logger.info("[#{}] Sort buckets", bucket_number);
             tbb::parallel_sort(m_items.begin(), m_items.end());
             //std::stable_sort(std::execution::par, m_items.begin(), m_items.end());
         } else {
             m_logger.info("Sort buckets (single-thread)");
             std::sort(m_items.begin(), m_items.end());
         }
-        m_logger.info("Completed sorting in {:.3f} seconds", sw_sort);
+        m_logger.info("[#{}] Completed sorting in {:.3f} seconds", bucket_number, sw_sort);
 
         // Debugging the code.
         // for (auto it = m_items.begin(); it != m_items.end(); ++it) {
@@ -413,6 +413,8 @@ public:
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
         // Find duplicated items.
+        spdlog::stopwatch sw_find;
+        m_logger.info("[#{}] Find duplicates", bucket_number);
         for (auto cur = m_items.begin(); cur != m_items.end(); ) {
             // Find the next item that has a different bucket from the current one.
             auto next = cur + 1;
@@ -426,6 +428,7 @@ public:
                 m_flags[cur->i] = 'd';
             }
         }
+        m_logger.info("[#{}] Completed finding duplicates in {:.3f} seconds", bucket_number, sw_find);
 
         // Count the number of active and detected (as duplicates) items.
         size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
@@ -433,10 +436,14 @@ public:
 
         // Save the index.
         if (save_index) {
-            // Open the index file.
             std::stringstream ss;
-            ss << basename << std::setfill('0') << std::setw(5) << bucket_number;
+            ss << basename << '.' << std::setfill('0') << std::setw(5) << bucket_number;
             const std::string filename = ss.str();
+
+            m_logger.info("[#{}] Save the index to: {}", bucket_number, filename);
+            spdlog::stopwatch sw_save;
+
+            // Open the index file.
             std::ofstream ofs(filename);
             if (ofs.fail()) {
                 m_logger.critical("Failed to open an index file: {}", filename);
@@ -451,6 +458,7 @@ public:
                     ofs.write(reinterpret_cast<const char*>(it->ptr()), bytes_per_bucket);
                 }
             }
+            m_logger.info("[#{}] Completed saving the index in {:.3f} seconds", bucket_number, sw_save);
         }
 
         // Change local duplicate flags into global ones.
@@ -462,19 +470,21 @@ public:
         double active_ratio = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;
         double detection_ratio = 0 < m_num_items ? num_detected / (double)m_num_items : 0.;
         m_logger.info(
-            "Completed for #{}: {{"
+            "[#{}] Completed: {{"
             "\"num_active_before\": {}, "
             "\"num_detected\": {}, "
             "\"num_active_after\": {}, "
             "\"active_ratio\": {:.05f}, "
-            "\"detection_ratio\": {:.05f}"
+            "\"detection_ratio\": {:.05f}, "
+            "\"time: {:.03f}"
             "}}",
             bucket_number,
             num_active_before,
             num_detected,
             num_active_after,
             active_ratio,
-            detection_ratio
+            detection_ratio,
+            sw
             );
     }
 
@@ -484,6 +494,7 @@ public:
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
         
         for (size_t bn = m_begin; bn < m_end; ++bn) {
+            m_logger.info("Deduplication for #{}", bn);
             deduplicate_bucket(bn, basename, save_index, parallel);
         }
         

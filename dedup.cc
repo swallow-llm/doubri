@@ -50,6 +50,8 @@ SOFTWARE.
 #include <tbb/parallel_for_each.h>
 
 #include "common.h"
+#include "index.hpp"
+#include "flag.hpp"
 
 /**
  * An item for deduplication.
@@ -302,28 +304,15 @@ public:
     {
         m_logger.info("Load flags from a file: {}", filename);
 
-        // Open the flag file.
-        std::ifstream ifs(filename);
-        if (ifs.fail()) {
-            m_logger.critical("Failed to open a flag file");
+        std::string msg = flag_load(filename, m_flags);
+        if (!msg.empty()) {
+            m_logger.critical(msg);
             throw MinHashLSHException();
         }
 
         // Check the size of the flag file.
-        ifs.seekg(0, std::ios::end);
-        auto filesize = ifs.tellg();
-        if (filesize != m_num_items) {
-            m_logger.critical("Number of elements is diffeerent");
-            throw MinHashLSHException();
-        }
-        ifs.seekg(0, std::ios::beg);
-
-        // Read the flags.
-        ifs.read(reinterpret_cast<std::ifstream::char_type*>(&m_flags.front()), filesize);
-
-        // Check whether the flags are properly read.
-        if (ifs.eof() || ifs.fail()) {
-            m_logger.critical("Failed to read the content of the flag file");
+        if (m_flags.size() != m_num_items) {
+            m_logger.critical("Flag file {} has {} items although the total number of items is {}", filename, m_flags.size(), m_num_items);
             throw MinHashLSHException();
         }
     }
@@ -332,19 +321,9 @@ public:
     {
         m_logger.info("Save flags to a file: {}", filename);
 
-        // Open the flag file.
-        std::ofstream ofs(filename);
-        if (ofs.fail()) {
-            m_logger.critical("Failed to open a flag file");
-            throw MinHashLSHException();
-        }
-
-        // Write the flags.
-        ofs.write(reinterpret_cast<std::ifstream::char_type*>(&m_flags.front()), m_flags.size());
-
-        // Check whether the flags are properly read.
-        if (ofs.fail()) {
-            m_logger.critical("Failed to write the flags to a file.");
+        std::string msg = flag_save(filename, m_flags);
+        if (!msg.empty()) {
+            m_logger.critical(msg);
             throw MinHashLSHException();
         }
     }
@@ -437,20 +416,21 @@ public:
         // Save the index.
         if (save_index) {
             // Open an index file.
-            IndexWriter writer(
+            IndexWriter writer;
+            
+            m_logger.info("[#{}] Save the index to: {}", bucket_number, writer.m_filename);
+            writer.open(
                 basename,
-                bytes_per_bucket,
                 bucket_number,
+                bytes_per_bucket,
                 m_num_items,
                 m_num_items - num_detected
                 );
-            m_logger.info("[#{}] Save the index to: {}", bucket_number, writer.m_filename);
             spdlog::stopwatch sw_save;
             if (writer.fail()) {
                 m_logger.critical("Failed to open an index file: {}", writer.m_filename);
                 throw MinHashLSHException();
             }
-            writer.write_header();
 
             // Write the index to the file.
             for (auto it = m_items.begin(); it != m_items.end(); ++it) {
@@ -582,7 +562,7 @@ int main(int argc, char *argv[])
         .choices("off", "trace", "debug", "info", "warning", "error", "critical")
         .nargs(1);
     program.add_argument("basename").metavar("BASENAME")
-        .help("basename for index (.#####) and flag (.dup) files");
+        .help("basename for index ({BASNAME}.idx.#####) and flag ({BASNAME}.dup) files");
 
     // Parse the command-line arguments.
     try {

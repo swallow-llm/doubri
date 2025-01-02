@@ -546,7 +546,7 @@ auto translate_log_level(const std::string& level)
 int main(int argc, char *argv[])
 {
     // Build a command-line parser.
-    argparse::ArgumentParser program("doubri-self", __DOUBRI_VERSION__);
+    argparse::ArgumentParser program("doubri-dedup", __DOUBRI_VERSION__);
     program.add_description("Read MinHash buckets from files, deduplicate items, and build bucket indices.");
     program.add_argument("-g", "--group").metavar("N")
         .help("specifies a group number (that will be written in the index files)")
@@ -599,7 +599,7 @@ int main(int argc, char *argv[])
     console_sink->set_level(translate_log_level(program.get<std::string>("log-console-level")));
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
     file_sink->set_level(translate_log_level(program.get<std::string>("log-file-level")));
-    spdlog::logger logger("doubri-self", {console_sink, file_sink});
+    spdlog::logger logger("doubri-dedup", {console_sink, file_sink});
 
     // Make sure that the group number is within 16 bits.
     if (group < 0 || 0xFFFF < group) {

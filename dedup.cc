@@ -349,7 +349,7 @@ public:
         }
     }
 
-    void deduplicate_bucket(size_t bucket_number, const std::string& basename, bool save_index = true, bool parallel = false)
+    void deduplicate_bucket(const std::string& basename, size_t group, size_t bucket_number, bool save_index = true, bool parallel = false)
     {
         spdlog::stopwatch sw;
         
@@ -436,26 +436,27 @@ public:
 
         // Save the index.
         if (save_index) {
-            std::stringstream ss;
-            ss << basename << '.' << std::setfill('0') << std::setw(5) << bucket_number;
-            const std::string filename = ss.str();
-
-            m_logger.info("[#{}] Save the index to: {}", bucket_number, filename);
+            // Open an index file.
+            IndexWriter writer(
+                basename,
+                bytes_per_bucket,
+                bucket_number,
+                m_num_items,
+                m_num_items - num_detected
+                );
+            m_logger.info("[#{}] Save the index to: {}", bucket_number, writer.m_filename);
             spdlog::stopwatch sw_save;
-
-            // Open the index file.
-            std::ofstream ofs(filename);
-            if (ofs.fail()) {
-                m_logger.critical("Failed to open an index file: {}", filename);
+            if (writer.fail()) {
+                m_logger.critical("Failed to open an index file: {}", writer.m_filename);
                 throw MinHashLSHException();
             }
+            writer.write_header();
 
             // Write the index to the file.
             for (auto it = m_items.begin(); it != m_items.end(); ++it) {
                 // Write items that are non duplicates in this trial.
                 if (m_flags[it->i] != 'd') {
-                    write_value<uint64_t>(ofs, it->i);
-                    ofs.write(reinterpret_cast<const char*>(it->ptr()), bytes_per_bucket);
+                    writer.write_item(group, it->i, it->ptr());
                 }
             }
             m_logger.info("[#{}] Completed saving the index in {:.3f} seconds", bucket_number, sw_save);
@@ -488,14 +489,14 @@ public:
             );
     }
 
-    void run(const std::string& basename, bool save_index = true, bool parallel = false)
+    void run(const std::string& basename, size_t group, bool save_index = true, bool parallel = false)
     {
         spdlog::stopwatch sw;
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
         
         for (size_t bn = m_begin; bn < m_end; ++bn) {
             m_logger.info("Deduplication for #{}", bn);
-            deduplicate_bucket(bn, basename, save_index, parallel);
+            deduplicate_bucket(basename, group, bn, save_index, parallel);
         }
         
         size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
@@ -554,8 +555,13 @@ auto translate_log_level(const std::string& level)
 int main(int argc, char *argv[])
 {
     // Build a command-line parser.
-    argparse::ArgumentParser program("doubri-self", __DOUBRI_VERSION__);
+    argparse::ArgumentParser program("doubri-dedup", __DOUBRI_VERSION__);
     program.add_description("Read MinHash buckets from files, deduplicate items, and build bucket indices.");
+    program.add_argument("-g", "--group").metavar("N")
+        .help("specifies a group number (that will be written in the index files)")
+        .nargs(1)
+        .default_value(0)
+        .scan<'d', int>();
     program.add_argument("-p", "--parallel")
         .help("uses multi-thread sorting for speed up")
         .flag();
@@ -590,6 +596,7 @@ int main(int argc, char *argv[])
 
     // Retrieve parameters.
     const auto basename = program.get<std::string>("basename");
+    const int group = program.get<int>("group");
     const auto ignore_flag = program.get<bool>("ignore-flag");
     const auto no_index = program.get<bool>("no-index");
     const auto parallel = program.get<bool>("parallel");
@@ -601,7 +608,13 @@ int main(int argc, char *argv[])
     console_sink->set_level(translate_log_level(program.get<std::string>("log-console-level")));
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
     file_sink->set_level(translate_log_level(program.get<std::string>("log-file-level")));
-    spdlog::logger logger("doubri-self", {console_sink, file_sink});
+    spdlog::logger logger("doubri-dedup", {console_sink, file_sink});
+
+    // Make sure that the group number is within 16 bits.
+    if (group < 0 || 0xFFFF < group) {
+        logger.critical("Group number must be in the range of [0, 65535]");
+        return 1;
+    }
 
     // The deduplication object.
     MinHashLSH dedup(logger);
@@ -636,7 +649,7 @@ int main(int argc, char *argv[])
     }
 
     // Perform deduplication.
-    dedup.run(basename, !no_index, parallel);
+    dedup.run(basename, group, !no_index, parallel);
 
     // Store the flag file.
     dedup.save_flag(flagfile);

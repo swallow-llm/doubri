@@ -34,6 +34,7 @@ SOFTWARE.
 #include <nlohmann/json.hpp>
 #include <argparse/argparse.hpp>
 #include "MurmurHash3.h"
+#include <byteswap.hpp>
 
 #include "common.h"
 

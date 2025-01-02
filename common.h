@@ -24,51 +24,12 @@ SOFTWARE.
 
 #pragma once
 
-#include <array>
 #include <cstdint>
 #include <string>
 #include <stdexcept>
 #include <sstream>
 
 #define __DOUBRI_VERSION__ "2.0"
-
-#define BYTE_PER_HASH 4
-#define BUCKET_SIZE 20
-#define BYTE_PER_BUCKET (BYTE_PER_HASH * BUCKET_SIZE)
-#define NUM_BUCKETS 40
-#define BYTE_PER_RECORD (BYTE_PER_BUCKET * NUM_BUCKETS)
-
-typedef std::array<uint8_t, BYTE_PER_BUCKET> bucket_t;
-
-struct kv {
-    std::string _key;
-    std::string _value;
-
-    kv(std::string_view key, std::string_view value)
-        : _key(key), _value("")
-    {
-        _value = "\"";
-        _value += value;
-        _value += "\"";
-    }
-    kv(std::string_view key, size_t value)
-        : _key(key), _value("")
-    {
-        _value = std::to_string(value);
-    }
-    kv(std::string_view key, double value)
-        : _key(key), _value("")
-    {
-        _value = std::to_string(value);
-    }
-};
-
-template <typename CharT, typename Traits>
-decltype(auto) operator<<(std::basic_ostream<CharT, Traits>& os, kv rhs)
-{
-    os << '"' << rhs._key << '"' << ": " << rhs._value;
-    return os;
-}
 
 template <typename StreamT, typename ValueT>
 inline void write_value(std::ostream& os, ValueT value)
@@ -89,3 +50,102 @@ inline ValueT read_value(std::istream& is)
     is.read(reinterpret_cast<char*>(&value_), sizeof(value_));
     return static_cast<ValueT>(value_);
 }
+
+class IndexWriter
+{
+public:
+    size_t m_bytes_per_bucket{0};
+    size_t m_bucket_number{0};
+    size_t m_num_total_items{0};
+    size_t m_num_active_items{0};
+    std::string m_filename;
+    std::ofstream m_ofs;
+
+public:
+    IndexWriter(
+        const std::string& basename,
+        size_t bytes_per_bucket = 0,
+        size_t bucket_number = 0,
+        size_t num_total_items = 0,
+        size_t num_active_items = 0
+        ) :
+        m_bytes_per_bucket(bytes_per_bucket),
+        m_bucket_number(bucket_number),
+        m_num_total_items(num_total_items),
+        m_num_active_items(num_active_items)
+    {
+        // Obtain the filename for the index.
+        std::stringstream ss;
+        ss << basename << ".idx." << std::setfill('0') << std::setw(5) << bucket_number;
+        m_filename = ss.str();
+
+        // Open the file in binary mode.
+        m_ofs.open(m_filename, std::ios::binary);
+    }
+
+    virtual ~IndexWriter()
+    {
+    }
+
+    bool fail()
+    {
+        return m_ofs.fail();
+    }
+
+    void write_header()
+    {
+        // Write the header: "DoubriI4"
+        m_ofs.write("DoubriI4", 8);
+        // Write the number of bytes per hash.
+        write_value<uint32_t>(m_ofs, m_bytes_per_bucket);
+        // Write the number of hash values per bucket.
+        write_value<uint32_t>(m_ofs, m_bucket_number);
+        // Write the total number of items (including duplicates).
+        write_value<uint64_t>(m_ofs, m_num_total_items);
+        // Write the number of active items (excluding duplicates).
+        write_value<uint64_t>(m_ofs, m_num_active_items);
+    }
+
+    void update_num_total_items(size_t num_total_items)
+    {
+        m_num_total_items = num_total_items;
+        auto cur = m_ofs.tellp();
+        m_ofs.seekp(16);
+        write_value<uint64_t>(m_ofs, m_num_total_items);
+        m_ofs.seekp(cur);
+    }
+
+    void update_num_active_items(size_t num_active_items)
+    {
+        m_num_active_items = num_active_items;
+        auto cur = m_ofs.tellp();
+        m_ofs.seekp(24);
+        write_value<uint64_t>(m_ofs, m_num_active_items);
+        m_ofs.seekp(cur);
+    }
+
+    void write_item(size_t g, size_t i, const uint8_t *bucket)
+    {
+        // Make sure that the group number is within 16 bits.
+        if (0xFFFF < g) {
+            std::stringstream ss;
+            ss << "Group number is out of range: " << g;
+            throw std::range_error(ss.str());
+        }
+        // Make sure that the index number is within 48 bits.
+        if (0x0000FFFFFFFFFFFF < i) {
+            std::stringstream ss;
+            ss << "Index number is out of range: " << i;
+            throw std::range_error(ss.str());            
+        }
+
+        // Build a 64 bit value.
+        uint64_t v = ((uint64_t)g << 48) | i;
+        if constexpr (std::endian::native == std::endian::little) {
+            v = std::byteswap(v);
+        }
+
+        m_ofs.write(reinterpret_cast<const char*>(bucket), m_bytes_per_bucket);
+        write_value<uint64_t>(m_ofs, v);
+    }
+};

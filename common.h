@@ -28,6 +28,7 @@ SOFTWARE.
 #include <string>
 #include <stdexcept>
 #include <sstream>
+#include <byteswap.h>
 
 #define __DOUBRI_VERSION__ "2.0"
 
@@ -142,7 +143,9 @@ public:
         // Build a 64 bit value.
         uint64_t v = ((uint64_t)g << 48) | i;
         if constexpr (std::endian::native == std::endian::little) {
-            v = std::byteswap(v);
+            // Use std::byteswap when C++23 is supported by most compilers.
+            // v = std::byteswap(v);
+            v = bswap_64(v);
         }
 
         m_ofs.write(reinterpret_cast<const char*>(bucket), m_bytes_per_bucket);

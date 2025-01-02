@@ -29,18 +29,14 @@ SOFTWARE.
 #include <iostream>
 #include <string>
 #include <vector>
+#include <byteswap.h>
 
 #include <utf8.h>
 #include <nlohmann/json.hpp>
 #include <argparse/argparse.hpp>
 #include "MurmurHash3.h"
-#include <byteswap.hpp>
 
 #include "common.h"
-
-//#if !defined(std::byteswap)
-//#include "biteswap.hpp"
-//#endif
 
 using json = nlohmann::json;
 
@@ -238,7 +234,9 @@ int main(int argc, char *argv[])
             if constexpr (std::endian::native == std::endian::little) {
                 // Change the byte order of the hash values to big endian.
                 for (int j = 0; j < num_hash_values; ++j) {
-                    buffer[j] = std::byteswap(buffer[j]);
+                    // Use std::byteswap when C++23 is supported by most compilers.
+                    // buffer[j] = std::byteswap(buffer[j]);
+                    buffer[j] = bswap_32(buffer[j]);
                 }
             }
             // Write the hash values.

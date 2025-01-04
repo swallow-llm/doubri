@@ -1,7 +1,7 @@
 /*
-    Dabri common staffs.
+    Common utility for spdlog.
 
-Copyright (c) 2023-2024, Naoaki Okazaki
+Copyright (c) 2023-2025, Naoaki Okazaki
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,30 +24,28 @@ SOFTWARE.
 
 #pragma once
 
-#include <cstdint>
-#include <string>
 #include <stdexcept>
-#include <sstream>
-#include <byteswap.h>
+#include <string>
+#include <spdlog/spdlog.h>
 
-#define __DOUBRI_VERSION__ "2.0"
-
-template <typename StreamT, typename ValueT>
-inline void write_value(std::ostream& os, ValueT value)
+auto translate_log_level(const std::string& level)
 {
-    StreamT value_ = static_cast<StreamT>(value);
-    if (static_cast<ValueT>(value_) != value) {
-        std::stringstream ss;
-        ss << "Impossible to store " << value << " in " << sizeof(StreamT) << " bytes";
-        throw std::range_error(ss.str());
+    if (level == "off") {
+        return spdlog::level::off;
+    } else if (level == "trace") {
+        return spdlog::level::trace;
+    } else if (level == "debug") {
+        return spdlog::level::debug;
+    } else if (level == "info") {
+        return spdlog::level::info;
+    } else if (level == "warning") {
+        return spdlog::level::warn;
+    } else if (level == "error") {
+        return spdlog::level::err;
+    } else if (level == "critical") {
+        return spdlog::level::critical;
+    } else {
+        std::string msg = std::string("Unknown log level: ") + level;
+        throw std::invalid_argument(msg);
     }
-    os.write(reinterpret_cast<char*>(&value_), sizeof(value_));
-}
-
-template <typename StreamT, typename ValueT>
-inline ValueT read_value(std::istream& is)
-{
-    StreamT value_;
-    is.read(reinterpret_cast<char*>(&value_), sizeof(value_));
-    return static_cast<ValueT>(value_);
 }

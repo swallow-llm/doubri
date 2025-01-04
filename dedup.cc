@@ -23,22 +23,17 @@ SOFTWARE.
 */
 
 #include <algorithm>
-#include <array>
 #include <bit>
 #include <concepts>
 #include <cstdint>
-#include <cstring>
 #include <compare>
-#include <execution>
 #include <fstream>
 #include <iomanip>
 #include <ios>
 #include <iostream>
-#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include <argparse/argparse.hpp>
@@ -52,14 +47,15 @@ SOFTWARE.
 #include "common.h"
 #include "index.hpp"
 #include "flag.hpp"
+#include "spdlog_util.hpp"
 
 /**
  * An item for deduplication.
  *
  *  For space efficiency, this program allocates a (huge) array of buckets
- *  at a time rather than allocating a bucket buffer for each item. The
- *  static member \c s_buffer stores the pointer to the bucket array and
- *  the static member \c s_bytes_per_bucket presents the byte per bucket.
+ *  at a time rather than allocating a bucket buffer for each Item instance.
+ *  The static member \c s_buffer stores the pointer to the bucket array,
+ *  and the static member \c s_bytes_per_bucket presents the byte per bucket.
  *  The member \c i presents the index number of the item.
  */
 struct Item {
@@ -73,10 +69,9 @@ struct Item {
      * This defines dictionary order of byte streams of buckets. When two
      * buckets are identical, this uses ascending order of index numbers
      * to ensure the stability of item order. This treatment is necessary
-     * to mark the same item as duplicates across different trials of
-     * deduplications with different bucket arrays. Calling std::sort()
-     * will sort items in dictionary order of buckets and ascending order
-     * of index numbers.
+     * for the consistency of duplicates recognized across different bucket
+     * arrays. Calling std::sort() will sort items in dictionary order of
+     * buckets and ascending order of index numbers.
      *
      *  @param  x   An item.
      *  @param  y   Another item.
@@ -132,7 +127,7 @@ struct Item {
     std::string repr() const
     {
         std::stringstream ss;
-        ss << std::setfill('0') << std::setw(5) << i;
+        ss << std::setfill('0') << std::setw(15) << i;
         for (size_t j = 0; j < s_bytes_per_bucket; ++j) {
             ss << std::setfill('0') << std::setw(2) << std::ios::hex << *(ptr() + j);
         }
@@ -284,15 +279,15 @@ public:
 
         // Allocate an array for buckets (this can be huge).
         size_t size = m_bytes_per_hash * m_num_hash_values * m_num_items;
-        m_logger.info("Allocate an array for buckets ({:.3f} MB)", size / 1000000.);
+        m_logger.info("Allocate an array for buckets ({:.3f} MB)", size / (double)1e6);
         m_buffer = new uint8_t[size];
 
         // Allocate an index for buckets.
-        m_logger.info("Allocate an array for items ({:.3f} MB)", m_num_items * sizeof(Item) / 1000000.);
+        m_logger.info("Allocate an array for items ({:.3f} MB)", m_num_items * sizeof(Item) / (double)1e6);
         m_items.resize(m_num_items);
 
         // Allocate an array for non-duplicate flags.
-        m_logger.info("Allocate an array for flags ({:.3f} MB)", m_num_items * sizeof(char) / 1000000.);
+        m_logger.info("Allocate an array for flags ({:.3f} MB)", m_num_items * sizeof(char) / (double)1e6);
         m_flags.resize(m_num_items, ' ');
 
         // Set static members of Item to access the bucket array.
@@ -328,7 +323,7 @@ public:
         }
     }
 
-    void deduplicate_bucket(const std::string& basename, size_t group, size_t bucket_number, bool save_index = true, bool parallel = false)
+    void deduplicate_bucket(const std::string& basename, size_t group, size_t bucket_number, bool save_index = true)
     {
         spdlog::stopwatch sw;
         
@@ -373,14 +368,9 @@ public:
 
         // Sort the buckets of items.
         spdlog::stopwatch sw_sort;
-        if (parallel) {
-            m_logger.info("[#{}] Sort buckets", bucket_number);
-            tbb::parallel_sort(m_items.begin(), m_items.end());
-            //std::stable_sort(std::execution::par, m_items.begin(), m_items.end());
-        } else {
-            m_logger.info("Sort buckets (single-thread)");
-            std::sort(m_items.begin(), m_items.end());
-        }
+        m_logger.info("[#{}] Sort buckets", bucket_number);
+        tbb::parallel_sort(m_items.begin(), m_items.end());
+        //std::stable_sort(std::execution::par, m_items.begin(), m_items.end());
         m_logger.info("[#{}] Completed sorting in {:.3f} seconds", bucket_number, sw_sort);
 
         // Debugging the code.
@@ -416,23 +406,22 @@ public:
         // Save the index.
         if (save_index) {
             // Open an index file.
-            IndexWriter writer;
-            
-            m_logger.info("[#{}] Save the index to: {}", bucket_number, writer.m_filename);
-            writer.open(
+            IndexWriter writer;            
+            std::string msg = writer.open(
                 basename,
                 bucket_number,
                 bytes_per_bucket,
                 m_num_items,
                 m_num_items - num_detected
                 );
-            spdlog::stopwatch sw_save;
-            if (writer.fail()) {
-                m_logger.critical("Failed to open an index file: {}", writer.m_filename);
+            if (!msg.empty()) {
+                m_logger.critical(msg);
                 throw MinHashLSHException();
             }
 
             // Write the index to the file.
+            m_logger.info("[#{}] Save the index to: {}", bucket_number, writer.m_filename);
+            spdlog::stopwatch sw_save;
             for (auto it = m_items.begin(); it != m_items.end(); ++it) {
                 // Write items that are non duplicates in this trial.
                 if (m_flags[it->i] != 'd') {
@@ -469,14 +458,14 @@ public:
             );
     }
 
-    void run(const std::string& basename, size_t group, bool save_index = true, bool parallel = false)
+    void run(const std::string& basename, size_t group, bool save_index = true)
     {
         spdlog::stopwatch sw;
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
         
         for (size_t bn = m_begin; bn < m_end; ++bn) {
             m_logger.info("Deduplication for #{}", bn);
-            deduplicate_bucket(basename, group, bn, save_index, parallel);
+            deduplicate_bucket(basename, group, bn, save_index);
         }
         
         size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
@@ -510,59 +499,33 @@ public:
     }
 };
 
-auto translate_log_level(const std::string& level)
-{
-    if (level == "off") {
-        return spdlog::level::off;
-    } else if (level == "trace") {
-        return spdlog::level::trace;
-    } else if (level == "debug") {
-        return spdlog::level::debug;
-    } else if (level == "info") {
-        return spdlog::level::info;
-    } else if (level == "warning") {
-        return spdlog::level::warn;
-    } else if (level == "error") {
-        return spdlog::level::err;
-    } else if (level == "critical") {
-        return spdlog::level::critical;
-    } else {
-        std::string msg = std::string("Unknown log level: ") + level;
-        throw std::invalid_argument(msg);
-    }
-}
-
 int main(int argc, char *argv[])
 {
     // Build a command-line parser.
     argparse::ArgumentParser program("doubri-dedup", __DOUBRI_VERSION__);
     program.add_description("Read MinHash buckets from files, deduplicate items, and build bucket indices.");
     program.add_argument("-g", "--group").metavar("N")
-        .help("specifies a group number (that will be written in the index files)")
+        .help("specifies a unique group order in the range of [0, 65535]")
         .nargs(1)
-        .default_value(0)
+        .required()
         .scan<'d', int>();
-    program.add_argument("-p", "--parallel")
-        .help("uses multi-thread sorting for speed up")
-        .flag();
-    program.add_argument("-f", "--ignore-flag")
-        .help("ignores existing flags to cold-start deduplication")
-        .flag();
     program.add_argument("-n", "--no-index")
         .help("does not save index files after deduplication")
         .flag();
-    program.add_argument("-l", "--log-console-level")
+    program.add_argument("-l", "--log-level-console")
         .help("sets a log level for console")
         .default_value(std::string{"warning"})
         .choices("off", "trace", "debug", "info", "warning", "error", "critical")
         .nargs(1);
-    program.add_argument("-L", "--log-file-level")
-        .help("sets a log level for file logging ({BASENAME}.log.txt)")
-        .default_value(std::string{"off"})
+    program.add_argument("-L", "--log-level-file")
+        .help("sets a log level for file logging ({BASENAME}.log)")
+        .default_value(std::string{"info"})
         .choices("off", "trace", "debug", "info", "warning", "error", "critical")
         .nargs(1);
     program.add_argument("basename").metavar("BASENAME")
-        .help("basename for index ({BASNAME}.idx.#####) and flag ({BASNAME}.dup) files");
+        .help("basename for output files (index, flag, source list, log)")
+        .nargs(1)
+        .required();
 
     // Parse the command-line arguments.
     try {
@@ -579,20 +542,20 @@ int main(int argc, char *argv[])
     const int group = program.get<int>("group");
     const auto ignore_flag = program.get<bool>("ignore-flag");
     const auto no_index = program.get<bool>("no-index");
-    const auto parallel = program.get<bool>("parallel");
     const std::string flagfile = basename + std::string(".dup");
-    const std::string logfile = basename + std::string(".log.txt");
+    const std::string logfile = basename + std::string(".log");
+    const std::string srcfile = basename + std::string(".src");
 
     // Initialize the console logger.
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(translate_log_level(program.get<std::string>("log-console-level")));
+    console_sink->set_level(translate_log_level(program.get<std::string>("log-level-console")));
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
-    file_sink->set_level(translate_log_level(program.get<std::string>("log-file-level")));
+    file_sink->set_level(translate_log_level(program.get<std::string>("log-level-file")));
     spdlog::logger logger("doubri-dedup", {console_sink, file_sink});
 
     // Make sure that the group number is within 16 bits.
     if (group < 0 || 0xFFFF < group) {
-        logger.critical("Group number must be in the range of [0, 65535]");
+        logger.critical("Group order must be in the range of [0, 65535]] {}", group);
         return 1;
     }
 
@@ -601,7 +564,7 @@ int main(int argc, char *argv[])
 
     // One MinHash file per line.
     for (;;) {
-        // Read a line from STDIN.
+        // Read a MinHash file (line) from STDIN.
         std::string line;
         std::getline(std::cin, line);
         if (std::cin.eof()) {
@@ -614,22 +577,31 @@ int main(int argc, char *argv[])
     // Read the MinHash files to initialize the deduplication engine.
     dedup.initialize();
 
-    // Load the flag file.
-    if (!ignore_flag) {
-        // Load the flag file if it exists.
-        std::ifstream ifs(flagfile);
-        if (!ifs.fail()) {
-            ifs.close();
-            dedup.load_flag(flagfile);
-        } else {
-            logger.info("Flag file does not exists: {}", flagfile);
+    // Write a list of source files.
+    {
+        // Open the source-list file.
+        std::ofstream ofs(srcfile);
+        if (ofs.fail()) {
+            logger.critical("Failed to open the source-list file: {}", srcfile);
+            return 1;
         }
-    } else {
-        logger.info("The user instructed to ignore a flag file");
+
+        // Write the group order.
+        ofs << "#G " << group << std::endl;
+
+        // Write the source files and their numbers of items.
+        for (auto& hf : dedup.m_hfs) {
+            ofs << hf.num_items << '\t' << hf.filename << std::endl;
+        }
+
+        if (ofs.fail()) {
+            logger.critical("Failed to write the list of source files");
+            return 1;
+        }
     }
 
     // Perform deduplication.
-    dedup.run(basename, group, !no_index, parallel);
+    dedup.run(basename, group, !no_index);
 
     // Store the flag file.
     dedup.save_flag(flagfile);

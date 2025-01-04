@@ -49,7 +49,7 @@ public:
     {
     }
 
-    bool open(
+    std::string open(
         const std::string& basename,
         size_t bucket_number = 0,
         size_t bytes_per_bucket = 0,
@@ -71,7 +71,7 @@ public:
         // Open the file in binary mode.
         m_ofs.open(m_filename, std::ios::binary);
         if (m_ofs.fail()) {
-            return false;
+            return std::string("Failed to open the index file: ") + m_filename;
         }
 
         // Write the header: "DoubriI4"
@@ -84,34 +84,35 @@ public:
         write_value<uint64_t>(m_ofs, m_num_total_items);
         // Write the number of active items (excluding duplicates).
         write_value<uint64_t>(m_ofs, m_num_active_items);
+        if (m_ofs.fail()) {
+            return std::string("Failed to write the header of the index file: ") + m_filename;
+        }
 
-        return !fail();
+        // Exit with an empty error message.
+        return std::string("");
     }
 
-    bool fail()
-    {
-        return m_ofs.fail();
-    }
-
-    void update_num_total_items(size_t num_total_items)
+    bool update_num_total_items(size_t num_total_items)
     {
         m_num_total_items = num_total_items;
         auto cur = m_ofs.tellp();
         m_ofs.seekp(16);
         write_value<uint64_t>(m_ofs, m_num_total_items);
         m_ofs.seekp(cur);
+        return !m_ofs.fail();
     }
 
-    void update_num_active_items(size_t num_active_items)
+    bool update_num_active_items(size_t num_active_items)
     {
         m_num_active_items = num_active_items;
         auto cur = m_ofs.tellp();
         m_ofs.seekp(24);
         write_value<uint64_t>(m_ofs, m_num_active_items);
         m_ofs.seekp(cur);
+        return !m_ofs.fail();
     }
 
-    void write_item(size_t g, size_t i, const uint8_t *bucket)
+    bool write_item(size_t g, size_t i, const uint8_t *bucket)
     {
         // Make sure that the group number is within 16 bits.
         if (0xFFFF < g) {
@@ -136,59 +137,13 @@ public:
 
         m_ofs.write(reinterpret_cast<const char*>(bucket), m_bytes_per_bucket);
         write_value<uint64_t>(m_ofs, v);
-    }
-};
-
-class IndexReader
-{
-public:
-    std::string m_filename;
-    size_t m_bucket_number{0};
-    size_t m_bytes_per_bucket{0};
-    size_t m_num_total_items{0};
-    size_t m_num_active_items{0};
-    std::ifstream m_ifs;
-
-    IndexReader()
-    {        
+        return !m_ofs.fail();
     }
 
-    virtual ~IndexReader()
+    bool write_raw(const uint8_t *buffer)
     {
-    }
-
-    bool open(const std::string& basename, size_t bucket_number)
-    {
-        // Obtain the filename for the index.
-        std::stringstream ss;
-        ss << basename << ".idx." << std::setfill('0') << std::setw(5) << bucket_number;
-        m_filename = ss.str();
-
-        // Open the file in binary mode.
-        m_ifs.open(m_filename, std::ios::binary);
-        if (m_ifs.fail()) {
-            return false;
-        }
-
-        // Check the header.
-        char magic[9]{};
-        m_ifs.read(magic, 8);
-        if (std::strcmp(magic, "DoubriI4") != 0) {
-            return false;
-        }
-
-        // Read the parameters in the header.
-        m_bucket_number = read_value<uint32_t, size_t>(m_ifs);
-        m_bytes_per_bucket = read_value<uint32_t, size_t>(m_ifs);
-        m_num_total_items = read_value<uint64_t, size_t>(m_ifs);
-        m_num_active_items = read_value<uint64_t, size_t>(m_ifs);
-
-        return !fail();
-    }
-
-    bool fail()
-    {
-        return m_ifs.fail();
+        m_ofs.write(reinterpret_cast<const char*>(buffer), m_bytes_per_bucket + 8);
+        return !m_ofs.fail();
     }
 };
 

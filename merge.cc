@@ -35,7 +35,6 @@ SOFTWARE.
 
 #include "common.h"
 #include "index.hpp"
-#include "spdlog_util.hpp"
 
 class IndexReader
 {
@@ -85,6 +84,9 @@ public:
         m_num_total_items = read_value<uint64_t, size_t>(m_ifs);
         m_num_active_items = read_value<uint64_t, size_t>(m_ifs);
 
+        // Allocate the buffer to read an item.
+        m_bs.resize(m_bytes_per_item);
+
         // Exit with an empty error message.
         return std::string("");
     }
@@ -99,76 +101,29 @@ public:
         return m_bytes_per_item;
     }
 
-    bool read(std::vector<uint8_t>& bs)
+    bool next()
     {
-        bs.resize(m_bytes_per_item);
         m_ifs.read(
-            reinterpret_cast<std::ifstream::char_type*>(&bs.front()),
+            reinterpret_cast<std::ifstream::char_type*>(&m_bs.front()),
             m_bytes_per_item
             );
         return !m_ifs.eof();
     }
-};
 
-
-struct Item {
-    std::vector<uint8_t> m_bs;
-    size_t m_k;
-
-    Item(size_t k = 0) : m_k(k)
+    const uint8_t *ptr() const
     {
+        return &m_bs.front();
     }
 
-    virtual ~Item()
+    const std::vector<uint8_t>& vec() const
     {
-    }
-
-    /**
-     * Spaceship operator for comparing buckets and group/item numbers.
-     *
-     * This defines dictionary order of byte streams of buckets. Because a
-     * byte stream includes a bucket and group/item number in this order,
-     * this function realizes ascending order of buckets, group numbers,
-     * and item numbers.
-     *
-     *  @param  x   An item.
-     *  @param  y   Another item.
-     *  @return std::strong_ordering    The order of the two items.
-     */
-    friend auto operator<=>(const Item& x, const Item& y) -> std::strong_ordering
-    {
-        for (size_t i = 0; i < x.m_bs.size(); ++i) {
-            int order = (int)x.m_bs[i] - (int)y.m_bs[i];
-            if (order != 0) {
-                return order <=> 0;
-            }
-        }
-        return std::strong_ordering::equal;
-        //std::strong_ordering order = x.m_bs <=> y.m_bs;
-        //return order;
-    }
-
-    /**
-     * Equality operator for comparing buckets.
-     *
-     * This defines the equality of two buckets. Unlike the operator <=>,
-     * this function does not consider group and index numbers of the items
-     * for equality, ignoring the last 8 bytes.
-     *
-     *  @param  x   An item.
-     *  @param  y   Another item.
-     *  @return bool    \c true when two items have the same bucket,
-     *                  \c false otherwise.
-     */
-    friend bool operator==(const Item& x, const Item& y)
-    {
-        return std::memcmp(&x.m_bs.front(), &y.m_bs.front(), x.m_bs.size()-8) == 0;
+        return m_bs;
     }
 
     std::string bucket() const
     {
         std::stringstream ss;
-        for (size_t i = 0; i < m_bs.size()-8; ++i) {
+        for (size_t i = 0; i < m_bytes_per_bucket; ++i) {
             ss << std::hex << std::setfill('0') << std::setw(2) << (int)m_bs[i];
         }
         return ss.str();
@@ -177,21 +132,73 @@ struct Item {
     size_t group() const
     {
         size_t v = 0;
-        for (size_t i = m_bs.size()-8; i < m_bs.size()-6; ++i) {
+        for (size_t i = 0; i < 2; ++i) {
             v <<= 8;
-            v |= m_bs[i];
+            v |= m_bs[m_bytes_per_bucket + i];
         }
         return v;
     }
 
-    size_t index() const
+    size_t item() const
     {
         size_t v = 0;
-        for (size_t i = m_bs.size()-6; i < m_bs.size(); ++i) {
+        for (size_t i = 2; i < 8; ++i) {
             v <<= 8;
-            v |= m_bs[i];
+            v |= m_bs[m_bytes_per_bucket + i];
         }
         return v;
+    }
+};
+
+/**
+ * An element (bucket, group, and item) of indices (sorted lists).
+ *
+ *  This class implements strong ordering and equality of index elements so
+ *  that we can merge K sorted lists of elements by using a priority queue.
+ *  This class does not hold a byte sequence representing a bucket, group,
+ *  and item but only stores a pointer to a reader object \c m_reader. This
+ *  prevents copying a byte sequence itself when insering an element into a
+ *  priority queue.
+ */
+struct Element {
+    IndexReader* reader{nullptr};
+
+    /**
+     * Spaceship operator for comparing elements (bucket, group, and item).
+     *
+     * This defines dictionary order of buckets, groups, and items in this
+     * priority. Because a byte sequence includes a bucket, group, and item
+     * in this order, we can simply compare the two vectors associated with
+     * the items.
+     *
+     *  @param  x   An element.
+     *  @param  y   Another element.
+     *  @return std::strong_ordering    The order of the two elements.
+     */
+    friend auto operator<=>(const Element& x, const Element& y) -> std::strong_ordering
+    {
+        return x.reader->vec() <=> y.reader->vec();
+    }
+
+    /**
+     * Equality operator for comparing elements (bucket, group, and item).
+     *
+     * This defines the equality of two buckets. Unlike the operator <=>,
+     * this function does not consider group and item numbers of the elements
+     * for equality, ignoring the last 8 bytes.
+     *
+     *  @param  x   An item.
+     *  @param  y   Another item.
+     *  @return bool    \c true when two items have the same bucket,
+     *                  \c false otherwise.
+     */
+    friend bool operator==(const Element& x, const Element& y)
+    {
+        return std::memcmp(
+            x.reader->ptr(),
+            y.reader->ptr(),
+            x.reader->bytes_per_bucket()
+            ) == 0;
     }
 };
 
@@ -208,9 +215,11 @@ int merge_index(
     size_t num_total_items = 0;
     size_t num_active_items = 0;
 
-    // Open source files.
+    // Open index files through K reader objects.
     IndexReader readers[K];
     for (size_t k = 0; k < K; ++k) {
+        // Open an index file.
+        logger.trace("Open an index file: {}", sources[k]);
         std::string msg = readers[k].open(sources[k], bucket_number);
         if (!msg.empty()) {
             logger.critical(msg);
@@ -222,55 +231,103 @@ int merge_index(
             bytes_per_bucket = readers[k].m_bytes_per_bucket;
             num_total_items = readers[k].m_num_total_items;
             num_active_items = readers[k].m_num_active_items;
+            logger.info("bytes_per_bucket: {}", bytes_per_bucket);
+            logger.info("num_total_items: {}", num_total_items);
+            logger.info("num_active_items: {}", num_active_items);
         } else {
             if (bytes_per_bucket != readers[k].m_bytes_per_bucket) {
-                logger.critical("Inconsistent parameter, bytes_per_bucket: {}", bytes_per_bucket);
+                logger.critical("Inconsistent parameter, bytes_per_bucket: {}", readers[k].m_bytes_per_bucket);
                 return 2;
             }
             num_total_items += readers[k].m_num_total_items;
             num_active_items += readers[k].m_num_active_items;
         }
+        if (readers[k].m_bucket_number != bucket_number) {
+            logger.critical("Inconsistent bucket number: {}", readers[k].m_bucket_number);
+            return 2;
+        }
     }
 
-    logger.info("bytes_per_bucket: {}", bytes_per_bucket);
-    logger.info("num_total_items: {}", num_total_items);
-    logger.info("num_active_items: {}", num_active_items);
-
+    // Writer for the index that merges the source indices.
     IndexWriter writer;
-    writer.open(output, bucket_number, bytes_per_bucket, num_total_items, num_active_items);
-
-    std::priority_queue<Item, std::vector<Item>, std::greater<Item> > pq;
-    Item items[K];
-    for (size_t k = 0; k < K; ++k) {
-        items[k].m_k = k;
+    if (!output.empty()) {
+        std::string msg = writer.open(
+            output,
+            bucket_number,
+            bytes_per_bucket,
+            num_total_items,
+            num_active_items);
+        if (!msg.empty()) {
+            logger.critical(msg);
+            return 3;
+        }
     }
 
-    // Push the first item of each index to the priority queue.
+    // The priority queue to select elements in ascending order.
+    // Note that we need to specify std::greater for ascending order.
+    std::priority_queue<Element, std::vector<Element>, std::greater<Element> > pq;
+
+    // Frontier elements from source indices.
+    Element items[sources.size()];
     for (size_t k = 0; k < K; ++k) {
-        if (readers[k].read(items[k].m_bs)) {
+        // Associate the k-th element with the k-th reader.
+        items[k].reader = &readers[k];
+    }
+
+    // Push the first element of each index to the priority queue.
+    for (size_t k = 0; k < K; ++k) {
+        if (items[k].reader->next()) {
             pq.push(items[k]);
         }
     }
 
-    //
+    // Merge the source indices.
+    num_active_items = 0;
     while (!pq.empty()) {
+        // Pop the minimum element.
         auto top = pq.top();
         pq.pop();
-        //writer.write_raw(top.get_reader()->ptr());
-        std::cout << "+ " << top.bucket() << ' ' << top.group() << ' ' << top.index() << std::endl;
+        ++num_active_items;
+
+        // Write the element to the output index if necessary.
+        if (!output.empty()) {
+            writer.write_raw(top.reader->ptr());
+        }
+
+        std::cout
+            << "+ "
+            << top.reader->bucket() << " "
+            << top.reader->group() << " "
+            << top.reader->item() << std::endl;
+
+        // Skip elements with the identical bucket to the minimum element.
         while (!pq.empty() && pq.top() == top) {
+            // Pop the element (this is a duplicate of the minimum element)
             auto next = pq.top();
             pq.pop();
-            size_t k = next.m_k;
-            std::cout << "- " << next.bucket() << ' ' << next.group() << ' ' << next.index() << std::endl;
-            if (readers[k].read(items[k].m_bs)) {
-                pq.push(items[k]);
+
+            std::cout
+                << "+ "
+                << next.reader->bucket() << " "
+                << next.reader->group() << " "
+                << next.reader->item() << std::endl;
+
+            // Read the next element from the index whose frontier element has
+            // just been recognized as a duplicate.
+            if (next.reader->next()) {
+                pq.push(next);
             }
         }
-        size_t k = top.m_k;
-        if (readers[k].read(items[k].m_bs)) {
-            pq.push(items[k]);
+
+        // Read the next element from the index whose frontier element was the
+        // minimum element (non-duplicate).
+        if (top.reader->next()) {
+            pq.push(top);
         }
+    }
+
+    if (!output.empty()) {
+        writer.update_num_active_items(num_active_items);
     }
 
     return 0;
@@ -309,12 +366,12 @@ int main(int argc, char *argv[])
         .help("basename for index ({OUTPUT}.idx.#####) and flag ({OUTPUT}.dup) files")
         .nargs(1)
         .required();
-    program.add_argument("-l", "--log-console-level")
+    program.add_argument("-l", "--log-level-console")
         .help("sets a log level for console")
         .default_value(std::string{"warning"})
         .choices("off", "trace", "debug", "info", "warning", "error", "critical")
         .nargs(1);
-    program.add_argument("-L", "--log-file-level")
+    program.add_argument("-L", "--log-level-file")
         .help("sets a log level for file logging ({OUTPUT}.log.txt)")
         .default_value(std::string{"off"})
         .choices("off", "trace", "debug", "info", "warning", "error", "critical")
@@ -343,9 +400,9 @@ int main(int argc, char *argv[])
 
     // Initialize the console logger.
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(translate_log_level(program.get<std::string>("log-console-level")));
+    console_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-console")));
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
-    file_sink->set_level(translate_log_level(program.get<std::string>("log-file-level")));
+    file_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-file")));
     spdlog::logger logger("doubri-merge", {console_sink, file_sink});
 
     // Perform index merging.
@@ -353,3 +410,4 @@ int main(int argc, char *argv[])
 
     return 0;
 }
+

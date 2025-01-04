@@ -47,7 +47,6 @@ SOFTWARE.
 #include "common.h"
 #include "index.hpp"
 #include "flag.hpp"
-#include "spdlog_util.hpp"
 
 /**
  * An item for deduplication.
@@ -548,9 +547,9 @@ int main(int argc, char *argv[])
 
     // Initialize the console logger.
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(translate_log_level(program.get<std::string>("log-level-console")));
+    console_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-console")));
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
-    file_sink->set_level(translate_log_level(program.get<std::string>("log-level-file")));
+    file_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-file")));
     spdlog::logger logger("doubri-dedup", {console_sink, file_sink});
 
     // Make sure that the group number is within 16 bits.

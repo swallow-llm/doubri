@@ -300,85 +300,17 @@ public:
         spdlog::stopwatch sw_read;
         m_logger.info("[#{}] Read buckets from {} files", bucket_number, m_hfs.size());
 
-        //tbb::parallel_for_each(m_hfs.begin(), m_hfs.end(), [&](HashFile& hf) {
-        for (auto& hf : m_hfs) {
-            m_logger.info("[#{}] Read {} buckets from {}", bucket_number, hf.num_items, hf.filename);
-
-            std::ifstream ifs(hf.filename, std::ios_base::in | std::ios::binary);
-            if (ifs.fail()) {
-                throw std::invalid_argument(
-                    std::string("Failed to open: ") + hf.filename
-                );
-            }
-
-            uint8_t *p = m_buffer;
-            const size_t num_sectors = m_num_items / 512;
-            const size_t num_remaining = m_num_items % 512;
-            const size_t bytes_per_sector_ba = 512 * m_bytes_per_hash * m_num_hash_values;
-            const size_t bytes_per_sector = (m_end - m_begin) * bytes_per_sector_ba;
-
-            for (size_t sector = 0; sector < num_sectors; ++sector) {
-                const size_t offset = 32 + bytes_per_sector * sector + bytes_per_sector_ba * (bucket_number - m_begin);
-                std::cout << "seek: " << offset << std::endl;
-                ifs.seekg(offset);
-                if (ifs.fail()) {
-                    throw std::runtime_error(
-                        std::string("Failed to seek data in the file")
-                    );
-                }
-                std::cout << "read: " << bytes_per_sector_ba << std::endl;
-                ifs.read(reinterpret_cast<char*>(p), bytes_per_sector_ba);
-                if (ifs.fail()) {
-                    throw std::runtime_error(
-                        std::string("Failed to read data from the file")
-                    );
-                }
-                p += bytes_per_sector_ba;
-            }
-            if (0 < num_remaining) {
-                size_t bytes = num_remaining * m_bytes_per_hash * m_num_hash_values;
-                const size_t offset = 32 + bytes_per_sector * num_sectors + bytes * (bucket_number - m_begin);
-                std::cout << "seek: " << offset << std::endl;
-                ifs.seekg(offset);
-                if (ifs.fail()) {
-                    throw std::runtime_error(
-                        std::string("Failed to seek data in the file (2)")
-                    );
-                }
-                std::cout << "read: " << bytes << std::endl;
-                ifs.read(reinterpret_cast<char*>(p), bytes);
-                if (ifs.fail()) {
-                    throw std::runtime_error(
-                        std::string("Failed to read data from the file (2)")
-                    );
-                }
-                p += bytes;
-            }
-
-            for (size_t i = 0; i < m_num_items; ++i) {
-                m_items[i].i = i;
-            }
-
-/*
-
+        tbb::parallel_for_each(m_hfs.begin(), m_hfs.end(), [&](HashFile& hf) {
+            m_logger.trace("[#{}] Read {} buckets from {}", bucket_number, hf.num_items, hf.filename);
 
             // Open the hash file.
             MinHashReader mr;
-            mr.open(hf.filename, bucket_number);
-            if (mr.m_ifs.fail()) {
-                throw std::runtime_error("ERR");
+            mr.open(hf.filename);
+            mr.read_bucket_array(m_buffer + hf.start_number * bytes_per_bucket, bucket_number);
+            for (size_t i = 0; i < m_num_items; ++i) {
+                m_items[i].i = i;
             }
-            std::cout << mr.m_num_items << std::endl;
-            
-            //std::ifstream ifs(hf.filename);
-            //ifs.seekg(32);
-            //if (ifs.fail()) {
-            //    throw std::runtime_error("ERR2");
-           // }
-            mr.read(m_buffer + hf.start_number * bytes_per_bucket);
-            */
-        }
-//        });
+        });
         m_logger.info("[#{}] Completed reading in {:.3f} seconds", bucket_number, sw_read);
 
         // Sort the buckets of items.

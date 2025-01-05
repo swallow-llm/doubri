@@ -253,7 +253,7 @@ public:
         }
     }
 
-    void read(uint8_t *buffer, size_t bucket_number)
+    void read_bucket_array(uint8_t *buffer, size_t bucket_number)
     {
         uint8_t *p = buffer;
         const size_t num_sectors = m_num_items / minhash_sector_size;

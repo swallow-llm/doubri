@@ -45,6 +45,7 @@ SOFTWARE.
 #include <tbb/parallel_for_each.h>
 
 #include "common.h"
+#include "minhash.hpp"
 #include "index.hpp"
 #include "flag.hpp"
 
@@ -217,60 +218,42 @@ public:
 
             // Open the hash file.
             m_logger.trace("Open a hash file: {}", hf.filename);
-            std::ifstream ifs(hf.filename, std::ios::binary);
-            if (ifs.fail()) {
-                m_logger.critical("Failed to open a hash file: {}", hf.filename);
-                throw MinHashLSHException();
-            }
-
-            // Check the header.
-            char magic[9]{};
-            ifs.read(magic, 8);
-            if (std::strcmp(magic, "DoubriH4") != 0) {
-                m_logger.critical("Unrecognized header '{}'", magic);
-                throw MinHashLSHException();
-            }
-
-            // Read the parameters in the hash file.
-            size_t num_items = read_value<uint32_t, size_t>(ifs);
-            size_t bytes_per_hash = read_value<uint32_t, size_t>(ifs);
-            size_t num_hash_values = read_value<uint32_t, size_t>(ifs);
-            size_t begin = read_value<uint32_t, size_t>(ifs);
-            size_t end = read_value<uint32_t, size_t>(ifs);
+            MinHashReader mr;
+            mr.open(hf.filename);
 
             // Store the parameters of the first file or check the cnosistency of other files.
             if (m_bytes_per_hash == 0) {
                 // This is the first file.
-                m_num_items = num_items;
-                m_bytes_per_hash = bytes_per_hash;
-                m_num_hash_values = num_hash_values;
-                m_begin = begin;
-                m_end = end;
+                m_num_items = mr.m_num_items;
+                m_bytes_per_hash = mr.m_bytes_per_hash;
+                m_num_hash_values = mr.m_num_hash_values;
+                m_begin = mr.m_begin;
+                m_end = mr.m_end;
                 m_logger.info("bytes_per_hash: {}", m_bytes_per_hash);
                 m_logger.info("num_hash_values: {}", m_num_hash_values);
                 m_logger.info("begin: {}", m_begin);
                 m_logger.info("end: {}", m_end);
             } else {
                 // Check the consistency of the parameters.
-                if (m_bytes_per_hash != bytes_per_hash) {
-                    m_logger.critical("Inconsistent parameter, bytes_per_hash: {}", bytes_per_hash);
+                if (m_bytes_per_hash != mr.m_bytes_per_hash) {
+                    m_logger.critical("Inconsistent parameter, bytes_per_hash: {}", mr.m_bytes_per_hash);
                     throw MinHashLSHException();
                 }
-                if (m_num_hash_values != num_hash_values) {
-                    m_logger.critical("Inconsistent parameter, num_hash_values: {}", num_hash_values);
+                if (m_num_hash_values != mr.m_num_hash_values) {
+                    m_logger.critical("Inconsistent parameter, num_hash_values: {}", mr.m_num_hash_values);
                     throw MinHashLSHException();
                 }
-                if (m_begin != begin) {
-                    m_logger.critical("Inconsistent parameter, begin: {}", begin);
+                if (m_begin != mr.m_begin) {
+                    m_logger.critical("Inconsistent parameter, begin: {}", mr.m_begin);
                     throw MinHashLSHException();
                 }
-                if (m_end != end) {
-                    m_logger.critical("Inconsistent parameter, end: {}", end);
+                if (m_end != mr.m_end) {
+                    m_logger.critical("Inconsistent parameter, end: {}", mr.m_end);
                     throw MinHashLSHException();
                 }
-                m_num_items += num_items;
+                m_num_items += mr.m_num_items;
             }
-            hf.num_items = num_items;
+            hf.num_items = mr.m_num_items;
         }
 
         m_logger.info("# items: {}", m_num_items);
@@ -312,42 +295,90 @@ public:
         spdlog::stopwatch sw;
         
         const size_t bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
-        const size_t bytes_per_item = bytes_per_bucket * (m_end - m_begin);
-        const size_t offset_bucket = bytes_per_bucket * (bucket_number - m_begin);
 
         // Read MinHash buckets from files.
         spdlog::stopwatch sw_read;
         m_logger.info("[#{}] Read buckets from {} files", bucket_number, m_hfs.size());
 
-        tbb::parallel_for_each(m_hfs.begin(), m_hfs.end(), [&](HashFile& hf) {
-            size_t i = hf.start_number;
-            
-            // Open the hash file.
-            std::ifstream ifs(hf.filename, std::ios::binary);
+        //tbb::parallel_for_each(m_hfs.begin(), m_hfs.end(), [&](HashFile& hf) {
+        for (auto& hf : m_hfs) {
+            m_logger.info("[#{}] Read {} buckets from {}", bucket_number, hf.num_items, hf.filename);
+
+            std::ifstream ifs(hf.filename, std::ios_base::in | std::ios::binary);
             if (ifs.fail()) {
-                m_logger.critical("Failed to open the hash file: {}", hf.filename);
-                throw MinHashLSHException();
+                throw std::invalid_argument(
+                    std::string("Failed to open: ") + hf.filename
+                );
             }
 
-            // Read the buckets at #bucket_number.
-            m_logger.trace("[#{}] Read {} buckets from {}", bucket_number, hf.num_items, hf.filename);
-            for (size_t j = 0; j < hf.num_items; ++j) {
+            uint8_t *p = m_buffer;
+            const size_t num_sectors = m_num_items / 512;
+            const size_t num_remaining = m_num_items % 512;
+            const size_t bytes_per_sector_ba = 512 * m_bytes_per_hash * m_num_hash_values;
+            const size_t bytes_per_sector = (m_end - m_begin) * bytes_per_sector_ba;
+
+            for (size_t sector = 0; sector < num_sectors; ++sector) {
+                const size_t offset = 32 + bytes_per_sector * sector + bytes_per_sector_ba * (bucket_number - m_begin);
+                std::cout << "seek: " << offset << std::endl;
+                ifs.seekg(offset);
+                if (ifs.fail()) {
+                    throw std::runtime_error(
+                        std::string("Failed to seek data in the file")
+                    );
+                }
+                std::cout << "read: " << bytes_per_sector_ba << std::endl;
+                ifs.read(reinterpret_cast<char*>(p), bytes_per_sector_ba);
+                if (ifs.fail()) {
+                    throw std::runtime_error(
+                        std::string("Failed to read data from the file")
+                    );
+                }
+                p += bytes_per_sector_ba;
+            }
+            if (0 < num_remaining) {
+                size_t bytes = num_remaining * m_bytes_per_hash * m_num_hash_values;
+                const size_t offset = 32 + bytes_per_sector * num_sectors + bytes * (bucket_number - m_begin);
+                std::cout << "seek: " << offset << std::endl;
+                ifs.seekg(offset);
+                if (ifs.fail()) {
+                    throw std::runtime_error(
+                        std::string("Failed to seek data in the file (2)")
+                    );
+                }
+                std::cout << "read: " << bytes << std::endl;
+                ifs.read(reinterpret_cast<char*>(p), bytes);
+                if (ifs.fail()) {
+                    throw std::runtime_error(
+                        std::string("Failed to read data from the file (2)")
+                    );
+                }
+                p += bytes;
+            }
+
+            for (size_t i = 0; i < m_num_items; ++i) {
                 m_items[i].i = i;
-                ifs.seekg(32 + bytes_per_item * j + offset_bucket);
-                ifs.read(reinterpret_cast<char*>(m_items[i].ptr()), bytes_per_bucket);
-                ++i;
             }
 
-            // Check whether the hash values are properly read.
-            if (ifs.eof()) {
-                m_logger.critical("Premature EOF of the hash file: {}", hf.filename);
-                throw MinHashLSHException();
+/*
+
+
+            // Open the hash file.
+            MinHashReader mr;
+            mr.open(hf.filename, bucket_number);
+            if (mr.m_ifs.fail()) {
+                throw std::runtime_error("ERR");
             }
-            if (ifs.eof()) {
-                m_logger.critical("Failed to read the content of the hash file: {}", hf.filename);
-                throw MinHashLSHException();
-            }             
-        });
+            std::cout << mr.m_num_items << std::endl;
+            
+            //std::ifstream ifs(hf.filename);
+            //ifs.seekg(32);
+            //if (ifs.fail()) {
+            //    throw std::runtime_error("ERR2");
+           // }
+            mr.read(m_buffer + hf.start_number * bytes_per_bucket);
+            */
+        }
+//        });
         m_logger.info("[#{}] Completed reading in {:.3f} seconds", bucket_number, sw_read);
 
         // Sort the buckets of items.
@@ -447,8 +478,6 @@ public:
         spdlog::stopwatch sw;
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
-        m_logger.info("group: ", group);
-
         for (size_t bn = m_begin; bn < m_end; ++bn) {
             m_logger.info("Deduplication for #{}", bn);
             deduplicate_bucket(basename, group, bn, save_index);
@@ -545,6 +574,7 @@ int main(int argc, char *argv[])
         logger.critical("Group order must be in the range of [0, 65535]] {}", group);
         return 1;
     }
+    logger.info("group: {}", group);
 
     // The deduplication object.
     MinHashLSH dedup(logger);

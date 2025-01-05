@@ -37,6 +37,7 @@ SOFTWARE.
 #include "MurmurHash3.h"
 
 #include "common.h"
+#include "minhash.hpp"
 
 using json = nlohmann::json;
 
@@ -172,30 +173,8 @@ int main(int argc, char *argv[])
     }
 
     // Open the output file.
-    std::ofstream ofs(filename, std::ios::binary);
-    if (ofs.fail()) {
-        es << "ERROR: failed to open: " << filename << std::endl;
-        return 1;
-    }
-
-    // Write the header: "DoubriH4"
-    ofs.write("DoubriH4", 8);
-    // Reserve the slot to write the number of items.
-    write_value<uint32_t>(ofs, num_items);
-    // Write the number of bytes per hash.
-    write_value<uint32_t>(ofs, bytes_per_hash);
-    // Write the number of hash values per bucket.
-    write_value<uint32_t>(ofs, num_hash_values);
-    // Write the begin index of buckets.
-    write_value<uint32_t>(ofs, begin);
-    // Write the end index of buckets.
-    write_value<uint32_t>(ofs, end);
-    // Write a zero for four bytes (reserved).
-    write_value<uint32_t>(ofs, 0);
-    if (ofs.fail()) {
-        es << "ERROR: failed to write a header: " << filename << std::endl;
-        return 1;
-    }
+    MinHashWriter mw;
+    mw.open(filename, num_hash_values, begin, end);
 
     // One JSON object per line.
     for (num_items = 0; ; ++num_items) {
@@ -225,40 +204,23 @@ int main(int argc, char *argv[])
         ngram(text, features, n);
 
         // Generate buckets from #{begin} to #{end-1}.
+        uint32_t buffer[(end-begin) * num_hash_values];
         for (int i = begin; i < end; ++i) {
+            size_t offset = (i-begin) * num_hash_values;
             // Compute min-hash values.
-            uint32_t buffer[num_hash_values];
-            minhash(features, buffer, i * num_hash_values, num_hash_values);
-            // We store MinHash values in big endian so that we can easily
-            // check byte streams with a binary editor (for debugging).
-            if constexpr (std::endian::native == std::endian::little) {
-                // Change the byte order of the hash values to big endian.
-                for (int j = 0; j < num_hash_values; ++j) {
-                    // Use std::byteswap when C++23 is supported by most compilers.
-                    // buffer[j] = std::byteswap(buffer[j]);
-                    buffer[j] = bswap_32(buffer[j]);
-                }
-            }
-            // Write the hash values.
-            ofs.write(reinterpret_cast<const char*>(buffer), sizeof(buffer));
-            if (ofs.fail()) {
-                es << "ERROR: failed to write a hash value: " << filename << std::endl;
-                return 1;
-            }
+            minhash(features, &buffer[offset], i * num_hash_values, num_hash_values);
         }
+
+        // Put the buckets to the writer.
+        mw.put(buffer);
     }
 
-    // Write the number of items in the header.
-    ofs.seekp(8);
-    write_value<uint32_t>(ofs, num_items);
-    if (ofs.fail()) {
-        es << "ERROR: failed to write the number of items: " << filename << std::endl;
-        return 1;
-    }
+    // Close the writer.
+    mw.close();
 
     // Show the number of items.
     if (!quiet) {
-        os << "num_items: " << num_items << std::endl;
+        os << "num_items: " << mw.num_items() << std::endl;
     }
 
     return 0;

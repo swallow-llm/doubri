@@ -49,34 +49,36 @@ SOFTWARE.
 #include "flag.hpp"
 
 /**
- * An item for deduplication.
+ * An element (bucket and item) for deduplication.
  *
+ *  This class implements strong ordering and equality of index elements so
+ *  that we can deduplicate items by sorting buckets and finding unique ones.
  *  For space efficiency, this program allocates a (huge) array of buckets
- *  at a time rather than allocating a bucket buffer for each Item instance.
+ *  at a time rather than allocating a bucket buffer for each Element instance.
  *  The static member \c s_buffer stores the pointer to the bucket array,
  *  and the static member \c s_bytes_per_bucket presents the byte per bucket.
- *  The member \c i presents the index number of the item.
+ *  The member \c i presents the item number.
  */
-struct Item {
+struct Element {
     static uint8_t *s_buffer;
     static size_t s_bytes_per_bucket;
     size_t i;
 
     /**
-     * Spaceship operator for comparing buckets and item indices.
+     * Spaceship operator for comparing buckets and item numbers.
      *
      * This defines dictionary order of byte streams of buckets. When two
-     * buckets are identical, this uses ascending order of index numbers
-     * to ensure the stability of item order. This treatment is necessary
+     * buckets are identical, this uses ascending order of item numbers
+     * to ensure the stability of element order. This treatment is necessary
      * for the consistency of duplicates recognized across different bucket
-     * arrays. Calling std::sort() will sort items in dictionary order of
-     * buckets and ascending order of index numbers.
+     * arrays. Calling std::sort() will sort elements in dictionary order of
+     * buckets and ascending order of item numbers.
      *
-     *  @param  x   An item.
-     *  @param  y   Another item.
-     *  @return std::strong_ordering    The order of the two items.
+     *  @param  x   An element.
+     *  @param  y   Another element.
+     *  @return std::strong_ordering    The order of the two elements.
      */
-    friend auto operator<=>(const Item& x, const Item& y) -> std::strong_ordering
+    friend auto operator<=>(const Element& x, const Element& y) -> std::strong_ordering
     {
         auto order = std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket);
         return order == 0 ? (x.i <=> y.i) : (order <=> 0);
@@ -86,14 +88,14 @@ struct Item {
      * Equality operator for comparing buckets.
      *
      * This defines the equality of two buckets. Unlike the operator <=>,
-     * this function does not consider item index numbers for equality.
-
+     * this function does not consider item numbers for equality.
+     * 
      *  @param  x   An item.
      *  @param  y   Another item.
-     *  @return bool    \c true when two items have the same bucket,
+     *  @return bool    \c true when two elements have the same bucket,
      *                  \c false otherwise.
      */
-    friend bool operator==(const Item& x, const Item& y)
+    friend bool operator==(const Element& x, const Element& y)
     {
         return std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket) == 0;
     }
@@ -119,7 +121,7 @@ struct Item {
     }
 
     /**
-     * Represents an item with the index number and bucket.
+     * Represents an element with the item number and bucket.
      *
      *  @return std::string The string representing the item.
      */
@@ -128,19 +130,19 @@ struct Item {
         std::stringstream ss;
         ss << std::setfill('0') << std::setw(15) << i;
         for (size_t j = 0; j < s_bytes_per_bucket; ++j) {
-            ss << std::setfill('0') << std::setw(2) << std::ios::hex << *(ptr() + j);
+            ss << std::ios::hex << std::setfill('0') << std::setw(2) << *(ptr() + j);
         }
         return ss.str();
     }
 };
 
-uint8_t *Item::s_buffer = nullptr;
-size_t Item::s_bytes_per_bucket = 0;
+uint8_t *Element::s_buffer = nullptr;
+size_t Element::s_bytes_per_bucket = 0;
 
 struct HashFile {
     std::string filename;
     size_t num_items{0};
-    size_t start_index{0};
+    size_t start_number{0};
 
     HashFile(const std::string& filename = "") : filename(filename)
     {
@@ -170,7 +172,7 @@ public:
 
 protected:
     uint8_t* m_buffer{nullptr};
-    std::vector<Item> m_items;
+    std::vector<Element> m_items;
     std::vector<char> m_flags;
     spdlog::logger& m_logger;
 
@@ -211,7 +213,7 @@ public:
         // Open the hash files to retrieve parameters.
         m_logger.info("# hash files: {}", m_hfs.size());
         for (auto& hf : m_hfs) {
-            hf.start_index = m_num_items;
+            hf.start_number = m_num_items;
 
             // Open the hash file.
             m_logger.trace("Open a hash file: {}", hf.filename);
@@ -282,33 +284,16 @@ public:
         m_buffer = new uint8_t[size];
 
         // Allocate an index for buckets.
-        m_logger.info("Allocate an array for items ({:.3f} MB)", m_num_items * sizeof(Item) / (double)1e6);
+        m_logger.info("Allocate an array for items ({:.3f} MB)", m_num_items * sizeof(Element) / (double)1e6);
         m_items.resize(m_num_items);
 
         // Allocate an array for non-duplicate flags.
         m_logger.info("Allocate an array for flags ({:.3f} MB)", m_num_items * sizeof(char) / (double)1e6);
         m_flags.resize(m_num_items, ' ');
 
-        // Set static members of Item to access the bucket array.
-        Item::s_buffer = m_buffer;
-        Item::s_bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
-    }
-
-    void load_flag(const std::string& filename)
-    {
-        m_logger.info("Load flags from a file: {}", filename);
-
-        std::string msg = flag_load(filename, m_flags);
-        if (!msg.empty()) {
-            m_logger.critical(msg);
-            throw MinHashLSHException();
-        }
-
-        // Check the size of the flag file.
-        if (m_flags.size() != m_num_items) {
-            m_logger.critical("Flag file {} has {} items although the total number of items is {}", filename, m_flags.size(), m_num_items);
-            throw MinHashLSHException();
-        }
+        // Set static members of Element to access the bucket array.
+        Element::s_buffer = m_buffer;
+        Element::s_bytes_per_bucket = m_bytes_per_hash * m_num_hash_values;
     }
 
     void save_flag(const std::string& filename)
@@ -335,7 +320,7 @@ public:
         m_logger.info("[#{}] Read buckets from {} files", bucket_number, m_hfs.size());
 
         tbb::parallel_for_each(m_hfs.begin(), m_hfs.end(), [&](HashFile& hf) {
-            size_t i = hf.start_index;
+            size_t i = hf.start_number;
             
             // Open the hash file.
             std::ifstream ifs(hf.filename, std::ios::binary);
@@ -461,7 +446,9 @@ public:
     {
         spdlog::stopwatch sw;
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
-        
+
+        m_logger.info("group: ", group);
+
         for (size_t bn = m_begin; bn < m_end; ++bn) {
             m_logger.info("Deduplication for #{}", bn);
             deduplicate_bucket(basename, group, bn, save_index);
@@ -473,6 +460,7 @@ public:
         // Report overall stFatistics.
         m_logger.info(
             "Result: {{"
+            "\"group:\": {}, "
             "\"num_items\": {}, "
             "\"bytes_per_hash\": {}, "
             "\"num_hash_values\": {}, "
@@ -484,6 +472,7 @@ public:
             "\"active_ratio_after\": {:.05f}, "
             "\"time\": {:.3f}"
             "}}",
+            group,
             m_num_items,
             m_bytes_per_hash,
             m_num_hash_values,

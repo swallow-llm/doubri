@@ -528,7 +528,6 @@ int main(int argc, char *argv[])
     // Retrieve parameters.
     const auto basename = program.get<std::string>("basename");
     const int group = program.get<int>("group");
-    const auto ignore_flag = program.get<bool>("ignore-flag");
     const auto no_index = program.get<bool>("no-index");
     const std::string flagfile = basename + std::string(".dup");
     const std::string logfile = basename + std::string(".log");

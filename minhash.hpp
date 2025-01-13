@@ -24,6 +24,50 @@ SOFTWARE.
 
 #pragma once
 
+/*
+
+A MinHash file (.mh) stores $R$ bucket arrays each of which consists of $N$
+buckets, where $N$ presents the number of items and $R$ presents the number
+of buckets (end-start). The table below shows the layout of a file, where
+a cell (i,j) corresponds to a bucket #j of an item #i. We call this layout
+"bucket major."
+
+ ============ Bucket #0 ============ === Bucket #1 === .. == Bucket #R =
++--------+--------+--------+--------+--------+--------+--------+--------+
+| (0, 0) | (1, 0) | ...... | (N, 0) | (0, 1) | (1, 1) | ...... | (N, R) | 
++--------+--------+--------+--------+--------+--------+--------+--------+
+
+It is more straightforward to implement a code for writing hash buckets in
+"item major" shown below because we can just process an item coming from
+the stream one by one.
+
+ ============= Item #1 ============= ==== Item #1 ====  ... == Item #N =
++--------+--------+--------+--------+--------+--------+--------+--------+
+| (0, 0) | (0, 1) | ...... | (0, B) | (1, 0) | (1, 1) | ...... | (N, R) | 
++--------+--------+--------+--------+--------+--------+--------+--------+
+
+However, this item-major layout causes a serious I/O bottleneck when a
+deduplication program (doubri-dedup) builds a bucket array. The program
+must read (0, 0), (1, 0), (2, 0), ..., (N, 0) for the bucket array #0, but
+the read pattern is too fragmented: e.g., read 80 bytes for the item #0,
+seek 3120 bytes to skip 39 buckets, read 80 bytes for the item #1, ...,
+when each bucket is 80 byte long and $R$ = 40. Because the size of SSD sector
+is usually 512 bytes, the program must read 6.4 times larger data to obtain
+a bucket of 80 bytes long.
+
+Therefore, we should use the bucket-major layout. However, it is difficult to
+find the number of items from a stream especially when the input stream is
+gzipped. For this reason, a MinHash file uses the bucket-major layout for
+every 512 items. MinHashWriter class maintains a buffer to store buckets of
+512 items at most, and flushes the buffer to the file when it is full.
+MinHashReader class can read a bucket array at a time (read_bucket_array).
+
+Our experiment demonstrated that reading a bucket array in bucket-major
+layout was 20 times faster than that in item-major layout on parallel reading
+with 64CPUs and SSD.
+
+*/
+
 #include <bit>
 #include <byteswap.h>
 #include <cstdint>
@@ -44,7 +88,7 @@ protected:
     size_t m_end{0};
 
     std::ofstream m_ofs;
-    std::vector< std::vector<uint32_t> > m_bas;
+    std::vector< std::vector<uint64_t> > m_bas;
     size_t m_i{0};
 
 public:
@@ -62,7 +106,7 @@ public:
     void open(const std::string& filename, size_t num_hash_values, size_t begin, size_t end)
     {
         // Open a MinHash file.
-        m_ofs.open(filename, std::ios::binary);
+        m_ofs.open(filename, std::ios_base::out | std::ios::binary);
         if (m_ofs.fail()) {
             throw std::invalid_argument(
                 std::string("Failed to open: ") + filename
@@ -74,7 +118,7 @@ public:
         // Reserve the slot to write the number of items.
         writeval<uint32_t>(m_ofs, 0);
         // Write the number of bytes per hash.
-        writeval<uint32_t>(m_ofs, sizeof(uint32_t));
+        writeval<uint32_t>(m_ofs, sizeof(uint64_t));
         // Write the number of hash values per bucket.
         writeval<uint32_t>(m_ofs, num_hash_values);
         // Write the begin index of buckets.
@@ -92,14 +136,14 @@ public:
         // Allocate bucket arrays [begin, end).
         m_bas.resize(end - begin);
         for (auto& ba : m_bas) {
-            // Resize and initialize each bucket array.
+            // Resize and initialize each bucket buffer with zero.
             ba.resize(minhash_sector_size * num_hash_values, 0);
         }
         m_i = 0;
 
         // Store the parameters in this object.
         m_num_items = 0;
-        m_bytes_per_hash = sizeof(uint32_t);
+        m_bytes_per_hash = sizeof(uint64_t);
         m_num_hash_values = num_hash_values;
         m_begin = begin;
         m_end = end;
@@ -113,7 +157,7 @@ public:
         // Make sure that the number of items can be stored in uint32_t.
         if (0xFFFFFFFF <= m_num_items) {
             std::stringstream ss;
-            ss << "Too many items to store in " << sizeof(uint32_t) << " bytes: " << m_num_items;
+            ss << "Too large item number to store in " << sizeof(uint32_t) << " bytes: " << m_num_items;
             throw std::range_error(ss.str());
         }
 
@@ -130,16 +174,16 @@ public:
         m_ofs.close();
     }
 
-    void put(const uint32_t *ptr)
+    void put(const uint64_t *ptr)
     {
-        // Flush the bucket arrays to the file if it is full.
+        // Flush the bucket buffers to the file if they are full.
         if (minhash_sector_size <= m_i) {
             flush();
         }
 
-        // Write the hash values to the bucket arrays.
+        // Write the hash values to the bucket buffers.
         for (size_t j = m_begin; j < m_end; ++j) {
-            std::vector<uint32_t>& ba = m_bas[j-m_begin];
+            std::vector<uint64_t>& ba = m_bas[j-m_begin];
             const size_t offset = m_i * m_num_hash_values;
             for (size_t i = 0; i < m_num_hash_values; ++i) {
                 // We store MinHash values in big endian so that we can easily
@@ -147,7 +191,7 @@ public:
                 if constexpr (std::endian::native == std::endian::little) {
                     // Use std::byteswap when C++23 is supported by most compilers.
                     // ba[offset+i] = std::byteswap((*ptr++));
-                    ba[offset+i] = bswap_32(*ptr++);
+                    ba[offset+i] = bswap_64(*ptr++);
                 } else {
                     ba[offset+i] = *ptr++;
                 }
@@ -163,10 +207,10 @@ public:
         if (0 < m_i) {
             // Write the bucket arrays to the file.
             for (size_t j = m_begin; j < m_end; ++j) {
-                std::vector<uint32_t>& ba = m_bas[j-m_begin];
+                std::vector<uint64_t>& ba = m_bas[j-m_begin];
                 m_ofs.write(
                     reinterpret_cast<const char*>(&ba.front()),
-                    m_i * sizeof(uint32_t) * m_num_hash_values
+                    m_i * sizeof(uint64_t) * m_num_hash_values
                     );
                 if (m_ofs.fail()) {
                     throw std::runtime_error(
@@ -242,13 +286,17 @@ public:
         size_t sector_size = readval<uint32_t, size_t>(m_ifs);
         if (sector_size != minhash_sector_size) {
             throw std::runtime_error(
-                std::string("Invalid sector size in the file")
+                std::string("Invalid sector size in the file: ") + filename
             );
         }
-
+        if (m_ifs.eof()) {
+            throw std::runtime_error(
+                std::string("EOF when reading the header of the file: ") + filename
+            );
+        }
         if (m_ifs.fail()) {
             throw std::invalid_argument(
-                std::string("Failed to read the header from: ") + filename
+                std::string("Failed to read the header from the file: ") + filename
             );
         }
     }
@@ -270,9 +318,14 @@ public:
                 );
             }
             m_ifs.read(reinterpret_cast<char*>(p), bytes_per_sector_ba);
+            if (m_ifs.eof()) {
+                throw std::runtime_error(
+                    std::string("EOF when reading the buckets from the file")
+                );
+            }
             if (m_ifs.fail()) {
                 throw std::runtime_error(
-                    std::string("Failed to read data from the file")
+                    std::string("Failed to read buckets from the file")
                 );
             }
             p += bytes_per_sector_ba;
@@ -283,13 +336,18 @@ public:
             m_ifs.seekg(offset);
             if (m_ifs.fail()) {
                 throw std::runtime_error(
-                    std::string("Failed to seek data in the file (2)")
+                    std::string("Failed to seek data in the file")
                 );
             }
             m_ifs.read(reinterpret_cast<char*>(p), bytes);
+            if (m_ifs.eof()) {
+                throw std::runtime_error(
+                    std::string("EOF when reading the buckets from the file")
+                );
+            }
             if (m_ifs.fail()) {
                 throw std::runtime_error(
-                    std::string("Failed to read data from the file (2)")
+                    std::string("Failed to read buckets from the file")
                 );
             }
             p += bytes;

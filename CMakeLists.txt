@@ -8,6 +8,7 @@ include_directories(${PROJECT_SOURCE_DIR}/contrib)
 
 add_executable(doubri-minhash minhash.cc MurmurHash3.cc)
 target_compile_options(doubri-minhash PUBLIC)
+target_link_libraries(doubri-minhash xxhash)
 
 add_executable(doubri-dedup dedup.cc)
 target_compile_options(doubri-dedup PUBLIC)

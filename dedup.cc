@@ -212,7 +212,7 @@ public:
         m_end = 0;
 
         // Open the hash files to retrieve parameters.
-        m_logger.info("# hash files: {}", m_hfs.size());
+        m_logger.info("num_minhash_files: {}", m_hfs.size());
         for (auto& hf : m_hfs) {
             hf.start_number = m_num_items;
 
@@ -256,7 +256,7 @@ public:
             hf.num_items = mr.m_num_items;
         }
 
-        m_logger.info("# items: {}", m_num_items);
+        m_logger.info("num_total_items: {}", m_num_items);
 
         // Clear existing arrays.
         clear();
@@ -307,11 +307,13 @@ public:
             MinHashReader mr;
             mr.open(hf.filename);
             mr.read_bucket_array(m_buffer + hf.start_number * bytes_per_bucket, bucket_number);
-            for (size_t i = 0; i < m_num_items; ++i) {
-                m_items[i].i = i;
-            }
         });
         m_logger.info("[#{}] Completed reading in {:.3f} seconds", bucket_number, sw_read);
+
+        // Set item numbers to elements.
+        for (size_t i = 0; i < m_num_items; ++i) {
+            m_items[i].i = i;
+        }
 
         // Sort the buckets of items.
         spdlog::stopwatch sw_sort;

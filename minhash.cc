@@ -34,7 +34,7 @@ SOFTWARE.
 #include <utf8.h>
 #include <nlohmann/json.hpp>
 #include <argparse/argparse.hpp>
-#include "MurmurHash3.h"
+#include <xxhash.h>
 
 #include "common.h"
 #include "minhash.hpp"
@@ -77,23 +77,22 @@ void ngram(const std::string& str, std::vector<std::string>& ngrams, int n)
 
 /**
  * Generate MinHash values for given strings.
- *  This function generates {num} MinHash values (in uint32_t) by using
+ *  This function generates {num} MinHash values (in uint64_t) by using
  *  hash functions #{begin}, #{begin+1}, ..., #{begin+num}, and write
- *  MinHash values to the buffer of {num} * uint32_t bytes.
+ *  MinHash values to the buffer of {num} * sizeof(hashvalue_t) bytes.
  *
  *  @param  strs    A target item represented as strings.
  *  @param  out     A pointer to the buffer to receive MinHash values.
  *  @param  begin   A beginning number of hash functions.
  *  @param  num     A number of MinHash values to generate.
  */
-void minhash(const std::vector<std::string>& strs, uint32_t *out, size_t begin, size_t num)
+void minhash(const std::vector<std::string>& strs, hashvalue_t *out, size_t begin, size_t num)
 {
     for (size_t i = 0; i < num; ++i) {
         const size_t seed = begin + i;
-        uint32_t min = 0xFFFFFFFF;
+        uint64_t min = 0xFFFFFFFFFFFFFFFF;
         for (auto it = strs.begin(); it != strs.end(); ++it) {
-            uint32_t hv;
-            MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), seed, &hv);
+            uint64_t hv = XXH64(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
             if (hv < min) {
                 min = hv;
             }
@@ -154,7 +153,7 @@ int main(int argc, char *argv[])
 
     // Retrieve parameters from the command-line arguments.
     const int n = program.get<int>("ngram");
-    const int bytes_per_hash = 4;
+    const int bytes_per_hash = sizeof(hashvalue_t);
     const int num_hash_values = program.get<int>("bucket");
     const int begin = program.get<int>("start");
     const int end = program.get<int>("end");
@@ -204,7 +203,7 @@ int main(int argc, char *argv[])
         ngram(text, features, n);
 
         // Generate buckets from #{begin} to #{end-1}.
-        uint32_t buffer[(end-begin) * num_hash_values];
+        hashvalue_t buffer[(end-begin) * num_hash_values];
         for (int i = begin; i < end; ++i) {
             size_t offset = (i-begin) * num_hash_values;
             // Compute min-hash values.

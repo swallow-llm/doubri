@@ -22,6 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#define DEBUG_DUPLICATES    1
+
 #include <algorithm>
 #include <bit>
 #include <concepts>
@@ -129,9 +131,9 @@ struct Element {
     std::string repr() const
     {
         std::stringstream ss;
-        ss << std::setfill('0') << std::setw(15) << i;
+        ss << std::setfill('0') << std::setw(15) << i << ": ";
         for (size_t j = 0; j < s_bytes_per_bucket; ++j) {
-            ss << std::ios::hex << std::setfill('0') << std::setw(2) << *(ptr() + j);
+            ss << std::hex << std::setfill('0') << std::setw(2) << (int)*(ptr() + j);
         }
         return ss.str();
     }
@@ -339,12 +341,28 @@ public:
             while (next != m_items.end() && *cur == *next) {
                 ++next;
             }
+
+#ifdef  DEBUG_DUPLICATES
+            bool has_duplicates = (next != cur + 1);
+            if (has_duplicates) {
+                std::cout << "Duplicate: " << cur->i;
+            }
+#endif/*DEBUG_DUPLICATES*/
+
             // Mark a duplication flag for every item with the same bucket.
             for (++cur; cur != next; ++cur) {
-                //std::cout << "Duplication: " << cur->i << std::endl;
                 // Mark the item with a local duplicate flag (within this trial).
                 m_flags[cur->i] = 'd';
+#ifdef  DEBUG_DUPLICATES
+                std::cout << " " << cur->i;
+#endif/*DEBUG_DUPLICATES*/
             }
+
+#ifdef  DEBUG_DUPLICATES
+            if (has_duplicates) {
+                std::cout << std::endl;
+            }
+#endif/*DEBUG_DUPLICATES*/
         }
         m_logger.info("[#{}] Completed finding duplicates in {:.3f} seconds", bucket_number, sw_find);
 

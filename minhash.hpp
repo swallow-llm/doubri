@@ -88,7 +88,7 @@ protected:
     size_t m_end{0};
 
     std::ofstream m_ofs;
-    std::vector< std::vector<uint64_t> > m_bas;
+    std::vector< std::vector<hashvalue_t> > m_bas;
     size_t m_i{0};
 
 public:
@@ -113,25 +113,26 @@ public:
             );
         }
 
-        // Write the header: "DoubriH4"
+        // 0x0000: Write the header: "DoubriH4"
         m_ofs.write("DoubriH4", 8);
-        // Reserve the slot to write the number of items.
-        writeval<uint32_t>(m_ofs, 0);
-        // Write the number of bytes per hash.
-        writeval<uint32_t>(m_ofs, sizeof(uint64_t));
-        // Write the number of hash values per bucket.
-        writeval<uint32_t>(m_ofs, num_hash_values);
-        // Write the begin index of buckets.
+        // 0x0008: Reserve the slot to write the number of items.
+        writeval<uint64_t>(m_ofs, 0);
+        // 0x0010: Write the number of bytes per hash.
+        writeval<uint16_t>(m_ofs, sizeof(hashvalue_t));
+        // 0x0012: Write the number of hash values per bucket.
+        writeval<uint16_t>(m_ofs, num_hash_values);
+        // 0x0014: Write the begin index of buckets.
         writeval<uint32_t>(m_ofs, begin);
-        // Write the end index of buckets.
+        // 0x0018: Write the end index of buckets.
         writeval<uint32_t>(m_ofs, end);
-        // Write the sector size.
+        // 0x001C: Write the sector size.
         writeval<uint32_t>(m_ofs, minhash_sector_size);
         if (m_ofs.fail()) {
             throw std::runtime_error(
                 std::string("Failed to write a header: ") + filename
             );
         }
+        // 0x0020: The bucket arrays start at this address.
 
         // Allocate bucket arrays [begin, end).
         m_bas.resize(end - begin);
@@ -143,7 +144,7 @@ public:
 
         // Store the parameters in this object.
         m_num_items = 0;
-        m_bytes_per_hash = sizeof(uint64_t);
+        m_bytes_per_hash = sizeof(hashvalue_t);
         m_num_hash_values = num_hash_values;
         m_begin = begin;
         m_end = end;
@@ -154,16 +155,9 @@ public:
         // Flush the remaining buckets.
         flush();
 
-        // Make sure that the number of items can be stored in uint32_t.
-        if (0xFFFFFFFF <= m_num_items) {
-            std::stringstream ss;
-            ss << "Too large item number to store in " << sizeof(uint32_t) << " bytes: " << m_num_items;
-            throw std::range_error(ss.str());
-        }
-
         // Store the number of items in the header.
         m_ofs.seekp(8);
-        writeval<uint32_t>(m_ofs, m_num_items);
+        writeval<uint64_t>(m_ofs, m_num_items);
         if (m_ofs.fail()) {
             throw std::runtime_error(
                 std::string("Failed to write data to the file")
@@ -183,7 +177,7 @@ public:
 
         // Write the hash values to the bucket buffers.
         for (size_t j = m_begin; j < m_end; ++j) {
-            std::vector<uint64_t>& ba = m_bas[j-m_begin];
+            auto& ba = m_bas[j-m_begin];
             const size_t offset = m_i * m_num_hash_values;
             for (size_t i = 0; i < m_num_hash_values; ++i) {
                 // We store MinHash values in big endian so that we can easily
@@ -207,10 +201,10 @@ public:
         if (0 < m_i) {
             // Write the bucket arrays to the file.
             for (size_t j = m_begin; j < m_end; ++j) {
-                std::vector<uint64_t>& ba = m_bas[j-m_begin];
+                auto& ba = m_bas[j-m_begin];
                 m_ofs.write(
                     reinterpret_cast<const char*>(&ba.front()),
-                    m_i * sizeof(uint64_t) * m_num_hash_values
+                    m_i * sizeof(hashvalue_t) * m_num_hash_values
                     );
                 if (m_ofs.fail()) {
                     throw std::runtime_error(
@@ -278,9 +272,9 @@ public:
         }
 
         // Read the parameters in the hash file.
-        m_num_items = readval<uint32_t, size_t>(m_ifs);
-        m_bytes_per_hash = readval<uint32_t, size_t>(m_ifs);
-        m_num_hash_values = readval<uint32_t, size_t>(m_ifs);
+        m_num_items = readval<uint64_t, size_t>(m_ifs);
+        m_bytes_per_hash = readval<uint16_t, size_t>(m_ifs);
+        m_num_hash_values = readval<uint16_t, size_t>(m_ifs);
         m_begin = readval<uint32_t, size_t>(m_ifs);
         m_end = readval<uint32_t, size_t>(m_ifs);
         size_t sector_size = readval<uint32_t, size_t>(m_ifs);

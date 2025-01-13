@@ -28,6 +28,7 @@ SOFTWARE.
 #include <iomanip>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 #include <byteswap.h>
 
@@ -46,10 +47,10 @@ using json = nlohmann::json;
  *  This function generates n-grams in UTF-8 character (not in byte).
  *
  *  @param  str     A string.
- *  @param  ngrams  A vector of strings to store n-grams.
+ *  @param  ngrams  An unordered set of strings to store n-grams.
  *  @param  n       The number of letters (N).
  */
-void ngram(const std::string& str, std::vector<std::string>& ngrams, int n)
+void ngram(const std::string& str, std::unordered_set<std::string>& ngrams, int n)
 {
     std::vector<const char *> cs;
     const char *end = str.c_str() + str.size();
@@ -71,7 +72,7 @@ void ngram(const std::string& str, std::vector<std::string>& ngrams, int n)
         const char *b = cs[i];
         const char *e = cs[i+n];
         std::string s(b, e-b);
-        ngrams.push_back(s);
+        ngrams.insert(s);
     }
 }
 
@@ -86,12 +87,13 @@ void ngram(const std::string& str, std::vector<std::string>& ngrams, int n)
  *  @param  begin   A beginning number of hash functions.
  *  @param  num     A number of MinHash values to generate.
  */
-void minhash(const std::vector<std::string>& strs, hashvalue_t *out, size_t begin, size_t num)
+template <class IteratorType>
+void minhash(IteratorType first, IteratorType last, hashvalue_t *out, size_t begin, size_t num)
 {
     for (size_t i = 0; i < num; ++i) {
         const size_t seed = begin + i;
         uint64_t min = 0xFFFFFFFFFFFFFFFF;
-        for (auto it = strs.begin(); it != strs.end(); ++it) {
+        for (auto it = first; it != last; ++it) {
             uint64_t hv = XXH64(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
             if (hv < min) {
                 min = hv;
@@ -199,7 +201,7 @@ int main(int argc, char *argv[])
         }
 
         // Obtain features (n-grams) from the text.
-        std::vector<std::string> features;
+        std::unordered_set<std::string> features;
         ngram(text, features, n);
 
         // Generate buckets from #{begin} to #{end-1}.
@@ -207,7 +209,7 @@ int main(int argc, char *argv[])
         for (int i = begin; i < end; ++i) {
             size_t offset = (i-begin) * num_hash_values;
             // Compute min-hash values.
-            minhash(features, &buffer[offset], i * num_hash_values, num_hash_values);
+            minhash(features.begin(), features.end(), &buffer[offset], i * num_hash_values, num_hash_values);
         }
 
         // Put the buckets to the writer.

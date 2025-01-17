@@ -22,13 +22,15 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#define DEBUG_DUPLICATES    1
+//#define DEBUG_DUPLICATES    1
+//#define DEBUG_SORT          1
 
 #include <algorithm>
 #include <bit>
 #include <concepts>
 #include <cstdint>
 #include <compare>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <ios>
@@ -52,15 +54,22 @@ SOFTWARE.
 #include "flag.hpp"
 
 /**
- * An element (bucket and item) for deduplication.
+ * An element (bucket and item number) for deduplication.
  *
- *  This class implements strong ordering and equality of index elements so
- *  that we can deduplicate items by sorting buckets and finding unique ones.
- *  For space efficiency, this program allocates a (huge) array of buckets
- *  at a time rather than allocating a bucket buffer for each Element instance.
- *  The static member \c s_buffer stores the pointer to the bucket array,
- *  and the static member \c s_bytes_per_bucket presents the byte per bucket.
- *  The member \c i presents the item number.
+ *  This class implements ordering and equality of elements so that we can
+ *  deduplicate items by sorting buckets and finding unique ones. For space
+ *  efficiency, this program allocates a (huge) array of buckets at a time
+ *  rather than allocating a bucket buffer for each Element instance. The
+ *  static member \c s_buffer stores the pointer to the bucket array, and
+ *  the static member \c s_bytes_per_bucket presents the byte per bucket.
+ *  The member \c i presents the item number. Note that the ordering of two
+ *  elements is a bit unintuitive:
+ *      + operator<(): buckets (ascending) and item numbers (ascending).
+ *      + operator>(): buckets (ascending) and item numbers (descending).
+ *      + operator==(): equality of buckets.
+ *  Deduplicating items with operator<() removes items with greater index
+ *  numbers, whereas doing so with operator>() removes items with less index
+ *  numbers.
  */
 struct Element {
     static uint8_t *s_buffer;
@@ -68,7 +77,7 @@ struct Element {
     size_t i;
 
     /**
-     * Spaceship operator for comparing buckets and item numbers.
+     * Less operator for comparing buckets and item numbers.
      *
      * This defines dictionary order of byte streams of buckets. When two
      * buckets are identical, this uses ascending order of item numbers
@@ -79,19 +88,39 @@ struct Element {
      *
      *  @param  x   An element.
      *  @param  y   Another element.
-     *  @return std::strong_ordering    The order of the two elements.
+     *  @return     \c true if x < y, \c false otherwise.
      */
-    friend auto operator<=>(const Element& x, const Element& y) -> std::strong_ordering
+    friend bool operator<(const Element& x, const Element& y)
     {
         auto order = std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket);
-        return order == 0 ? (x.i <=> y.i) : (order <=> 0);
+        return order == 0 ? (x.i < y.i) : (order < 0);
+    }
+
+    /**
+     * Greater operator for comparing buckets and item numbers.
+     *
+     * This defines dictionary order of byte streams of buckets. When two
+     * buckets are identical, this uses descending order of item numbers
+     * to ensure the stability of element order. This treatment is necessary
+     * for the consistency of duplicates recognized across different bucket
+     * arrays. Calling std::sort() will sort elements in dictionary order of
+     * buckets and descending order of item numbers.
+     *
+     *  @param  x   An element.
+     *  @param  y   Another element.
+     *  @return     \c true if x > y, \c false otherwise.
+     */
+    friend bool operator>(const Element& x, const Element& y)
+    {
+        auto order = std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket);
+        return order == 0 ? (y.i < x.i) : (order < 0);
     }
 
     /**
      * Equality operator for comparing buckets.
      *
-     * This defines the equality of two buckets. Unlike the operator <=>,
-     * this function does not consider item numbers for equality.
+     * This defines the equality of two buckets. Unlike the operator< and
+     * operator>, this function does not consider item numbers for equality.
      * 
      *  @param  x   An item.
      *  @param  y   Another item.
@@ -292,7 +321,7 @@ public:
         }
     }
 
-    void deduplicate_bucket(const std::string& basename, size_t group, size_t bucket_number, bool save_index = true)
+    void deduplicate_bucket(const std::string& basename, size_t bucket_number, bool reverse = false, bool save_index = true)
     {
         spdlog::stopwatch sw;
         
@@ -320,14 +349,18 @@ public:
         // Sort the buckets of items.
         spdlog::stopwatch sw_sort;
         m_logger.info("[#{}] Sort buckets", bucket_number);
-        tbb::parallel_sort(m_items.begin(), m_items.end());
-        //std::stable_sort(std::execution::par, m_items.begin(), m_items.end());
+        if (reverse) {
+            tbb::parallel_sort(m_items.begin(), m_items.end(), std::less<Element>());
+        } else {
+            tbb::parallel_sort(m_items.begin(), m_items.end(), std::greater<Element>());
+        }
         m_logger.info("[#{}] Completed sorting in {:.3f} seconds", bucket_number, sw_sort);
 
-        // Debugging the code.
-        // for (auto it = m_items.begin(); it != m_items.end(); ++it) {
-        //     std::cout << it->repr() << std::endl;
-        // }
+#ifdef  DEBUG_SORT
+        for (auto it = m_items.begin(); it != m_items.end(); ++it) {
+            std::cout << it->repr() << std::endl;
+        }
+#endif/*DEBUG_SORT*/
 
         // Count the number of inactive items.
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
@@ -372,14 +405,15 @@ public:
 
         // Save the index.
         if (save_index) {
-            // Open an index file.
+            // Open an index file (untrimmed).
             IndexWriter writer;            
             std::string msg = writer.open(
                 basename,
                 bucket_number,
                 bytes_per_bucket,
                 m_num_items,
-                m_num_items - num_detected
+                m_num_items - num_detected,
+                false
                 );
             if (!msg.empty()) {
                 m_logger.critical(msg);
@@ -387,12 +421,12 @@ public:
             }
 
             // Write the index to the file.
-            m_logger.info("[#{}] Save the index to: {}", bucket_number, writer.m_filename);
+            m_logger.info("[#{}] Save the untrimmed index to: {}", bucket_number, writer.m_filename);
             spdlog::stopwatch sw_save;
             for (auto it = m_items.begin(); it != m_items.end(); ++it) {
                 // Write items that are non duplicates in this trial.
                 if (m_flags[it->i] != 'd') {
-                    writer.write_item(group, it->i, it->ptr());
+                    writer.write_item(it->i, it->ptr());
                 }
             }
             m_logger.info("[#{}] Completed saving the index in {:.3f} seconds", bucket_number, sw_save);
@@ -425,14 +459,14 @@ public:
             );
     }
 
-    void run(const std::string& basename, size_t group, bool save_index = true)
+    void run(const std::string& basename, bool reverse = false, bool save_index = true)
     {
         spdlog::stopwatch sw;
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
         for (size_t bn = m_begin; bn < m_end; ++bn) {
             m_logger.info("Deduplication for #{}", bn);
-            deduplicate_bucket(basename, group, bn, save_index);
+            deduplicate_bucket(basename, bn, reverse, save_index);
         }
         
         size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
@@ -441,7 +475,6 @@ public:
         // Report overall stFatistics.
         m_logger.info(
             "Result: {{"
-            "\"group:\": {}, "
             "\"num_items\": {}, "
             "\"bytes_per_hash\": {}, "
             "\"num_hash_values\": {}, "
@@ -453,7 +486,6 @@ public:
             "\"active_ratio_after\": {:.05f}, "
             "\"time\": {:.3f}"
             "}}",
-            group,
             m_num_items,
             m_bytes_per_hash,
             m_num_hash_values,
@@ -466,6 +498,72 @@ public:
             sw
             );
     }
+
+    void trim_bucket_array(const std::string& basename, size_t bucket_number)
+    {
+        std::string msg;
+
+        // Open an untrimmed index file for reading.
+        IndexReader reader;
+        msg = reader.open(basename, bucket_number, false);
+        if (!msg.empty()) {
+            m_logger.critical(msg);
+            throw MinHashLSHException();
+        }
+
+        // Open a trimmed index file for writing.
+        IndexWriter writer;
+        msg = writer.open(
+            basename,
+            bucket_number,
+            reader.m_bytes_per_bucket,
+            reader.m_num_total_items,
+            0,  // Set this to zero for now (we will find out later)
+            true);
+        if (!msg.empty()) {
+            m_logger.critical(msg);
+            throw MinHashLSHException();
+        }
+
+        spdlog::stopwatch sw;
+        m_logger.info("[#{}] Trim inactive items: {} => {}", bucket_number, reader.m_filename, writer.m_filename);
+        m_logger.info("[#{}] The number of active items in the untrimmed index: {}", bucket_number, reader.m_num_active_items);
+
+        // Write items that are active across different bucket arrays.
+        size_t num_active_items = 0;
+        for (size_t j = 0; j < reader.m_num_active_items; ++j) {
+            if (!reader.next()) {
+                m_logger.critical("Premature EOF of the index file: {}", reader.m_filename);
+                throw MinHashLSHException();
+            }
+            // Write the item if the current item is active.
+            if (m_flags[reader.inum()] == ' ') {
+                ++num_active_items;
+                if (!writer.write_raw(reader.ptr())) {
+                    m_logger.critical("Failed to write an element to the index file: {}", writer.m_filename);
+                    throw MinHashLSHException();
+                }
+            }
+        }
+
+        // Write the number of active items.
+        writer.update_num_active_items(num_active_items);
+        m_logger.info("[#{}] The number of active items in the trimmed index: {}", bucket_number, num_active_items);
+
+        // Delete the untrimmed index file.
+        const std::string file_to_be_deleted = reader.m_filename;
+        reader.close();
+        std::filesystem::remove(file_to_be_deleted);
+
+        m_logger.info("[#{}] Completed trimming the index in {:.3f} seconds", bucket_number, sw);
+    }
+
+    void trim(const std::string& basename)
+    {
+        for (size_t bn = m_begin; bn < m_end; ++bn) {
+            trim_bucket_array(basename, bn);
+        }
+    }
 };
 
 int main(int argc, char *argv[])
@@ -473,11 +571,10 @@ int main(int argc, char *argv[])
     // Build a command-line parser.
     argparse::ArgumentParser program("doubri-dedup", __DOUBRI_VERSION__);
     program.add_description("Read MinHash buckets from files, deduplicate items, and build bucket indices.");
-    program.add_argument("-g", "--group").metavar("N")
-        .help("specifies a unique group order in the range of [0, 65535]")
-        .nargs(1)
-        .required()
-        .scan<'d', int>();
+    program.add_argument("-r", "--reverse")
+        .help("keep older duplicated items (newer items, by default)")
+        .default_value(false)
+        .flag();
     program.add_argument("-n", "--no-index")
         .help("does not save index files after deduplication")
         .flag();
@@ -508,8 +605,8 @@ int main(int argc, char *argv[])
 
     // Retrieve parameters.
     const auto basename = program.get<std::string>("basename");
-    const int group = program.get<int>("group");
     const auto no_index = program.get<bool>("no-index");
+    const auto reverse = program.get<bool>("reverse");
     const std::string flagfile = basename + std::string(".dup");
     const std::string logfile = basename + std::string(".log");
     const std::string srcfile = basename + std::string(".src");
@@ -520,13 +617,6 @@ int main(int argc, char *argv[])
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
     file_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-file")));
     spdlog::logger logger("doubri-dedup", {console_sink, file_sink});
-
-    // Make sure that the group number is within 16 bits.
-    if (group < 0 || 0xFFFF < group) {
-        logger.critical("Group order must be in the range of [0, 65535]] {}", group);
-        return 1;
-    }
-    logger.info("group: {}", group);
 
     // The deduplication object.
     MinHashLSH dedup(logger);
@@ -555,9 +645,6 @@ int main(int argc, char *argv[])
             return 1;
         }
 
-        // Write the group order.
-        ofs << "#G " << group << std::endl;
-
         // Write the source files and their numbers of items.
         for (auto& hf : dedup.m_hfs) {
             ofs << hf.num_items << '\t' << hf.filename << std::endl;
@@ -570,7 +657,12 @@ int main(int argc, char *argv[])
     }
 
     // Perform deduplication.
-    dedup.run(basename, group, !no_index);
+    dedup.run(basename, reverse, !no_index);
+
+    //
+    if (!no_index) {
+        dedup.trim(basename);
+    }
 
     // Store the flag file.
     dedup.save_flag(flagfile);

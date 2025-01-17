@@ -76,10 +76,12 @@ with 64CPUs and SSD.
 #include <stdexcept>
 #include <vector>
 
-typedef uint64_t hashvalue_t;
-
 const int minhash_sector_size = 512;
 
+/**
+ * A writer for MinHash files (*.mh)
+ */
+template <class HashType>
 class MinHashWriter
 {
 protected:
@@ -90,14 +92,20 @@ protected:
     size_t m_end{0};
 
     std::ofstream m_ofs;
-    std::vector< std::vector<hashvalue_t> > m_bas;
+    std::vector< std::vector<HashType> > m_bas;
     size_t m_i{0};
 
 public:
+    /**
+     * Construct.
+     */
     MinHashWriter()
     {
     }
 
+    /**
+     * Destruct.
+     */
     virtual ~MinHashWriter()
     {
         if (m_ofs.is_open()) {
@@ -105,6 +113,13 @@ public:
         }
     }
 
+    /**
+     * Open a MinHash file for writing.
+     *  @param  filename        The name for the MinHash file.
+     *  @param  num_hash_values The number of MinHash values per bucket.
+     *  @param  begin           The beginning number of bucket arrays.
+     *  @param  end             The end number of bucket arrays.
+     */
     void open(const std::string& filename, size_t num_hash_values, size_t begin, size_t end)
     {
         // Open a MinHash file.
@@ -120,7 +135,7 @@ public:
         // 0x0008: Reserve the slot to write the number of items.
         writeval<uint64_t>(m_ofs, 0);
         // 0x0010: Write the number of bytes per hash.
-        writeval<uint16_t>(m_ofs, sizeof(hashvalue_t));
+        writeval<uint16_t>(m_ofs, sizeof(HashType));
         // 0x0012: Write the number of hash values per bucket.
         writeval<uint16_t>(m_ofs, num_hash_values);
         // 0x0014: Write the begin index of buckets.
@@ -146,12 +161,15 @@ public:
 
         // Store the parameters in this object.
         m_num_items = 0;
-        m_bytes_per_hash = sizeof(hashvalue_t);
+        m_bytes_per_hash = sizeof(HashType);
         m_num_hash_values = num_hash_values;
         m_begin = begin;
         m_end = end;
     }
 
+    /**
+     * Close the MinHash file.
+     */
     void close()
     {
         // Flush the remaining buckets.
@@ -170,7 +188,11 @@ public:
         m_ofs.close();
     }
 
-    void put(const uint64_t *ptr)
+    /**
+     * Write a MinHash bucket.
+     *  @param  ptr     The pointer to the MinHash bucket.
+     */
+    void put(const HashType *ptr)
     {
         // Flush the bucket buffers to the file if they are full.
         if (minhash_sector_size <= m_i) {
@@ -187,7 +209,13 @@ public:
                 if constexpr (std::endian::native == std::endian::little) {
                     // Use std::byteswap when C++23 is supported by most compilers.
                     // ba[offset+i] = std::byteswap((*ptr++));
-                    ba[offset+i] = bswap_64(*ptr++);
+                    if constexpr (sizeof(HashType) == 8) {
+                        ba[offset+i] = bswap_64(*ptr++);
+                    } else if constexpr (sizeof(HashType) == 4) {
+                        ba[offset+i] = bswap_32(*ptr++);
+                    } else {
+                        ba[offset+i] = *ptr++;
+                    }
                 } else {
                     ba[offset+i] = *ptr++;
                 }
@@ -198,6 +226,10 @@ public:
         ++m_num_items;
     }
 
+protected:
+    /**
+     * Flush the buffer to the file.
+     */
     void flush()
     {
         if (0 < m_i) {
@@ -206,7 +238,7 @@ public:
                 auto& ba = m_bas[j-m_begin];
                 m_ofs.write(
                     reinterpret_cast<const char*>(&ba.front()),
-                    m_i * sizeof(hashvalue_t) * m_num_hash_values
+                    m_i * sizeof(HashType) * m_num_hash_values
                     );
                 if (m_ofs.fail()) {
                     throw std::runtime_error(
@@ -218,6 +250,11 @@ public:
         m_i = 0;
     }
 
+public:
+    /**
+     * Get the number of items.
+     *  @return The number of items in the file.
+     */
     inline size_t num_items() const
     {
         return m_num_items;
@@ -232,6 +269,11 @@ protected:
     }
 };
 
+
+
+/**
+ * A reader for a MinHash file.
+ */
 class MinHashReader
 {
 public:
@@ -246,14 +288,24 @@ public:
     size_t m_i{0};
 
 public:
+    /**
+     * Construct.
+     */
     MinHashReader()
     {
     }
 
+    /**
+     * Destruct.
+     */
     virtual ~MinHashReader()
     {
     }
 
+    /**
+     * Open a MinHash file for reading.
+     *  @param  filename        The name for the MinHash file.
+     */
     void open(const std::string& filename)
     {
         // Open a MinHash file.
@@ -297,6 +349,11 @@ public:
         }
     }
 
+    /**
+     * Read a bucket array at a time.
+     *  @param  buffer          The buffer to store the bucket array.
+     *  @param  bucket_number   The number of the bucket array to read.
+     */
     void read_bucket_array(uint8_t *buffer, size_t bucket_number)
     {
         uint8_t *p = buffer;

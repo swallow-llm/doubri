@@ -76,6 +76,8 @@ with 64CPUs and SSD.
 #include <stdexcept>
 #include <vector>
 
+typedef uint64_t hashvalue_t;
+
 const int minhash_sector_size = 512;
 
 class MinHashWriter

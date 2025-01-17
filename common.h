@@ -32,7 +32,7 @@ SOFTWARE.
 
 #define __DOUBRI_VERSION__ "2.0"
 
-typedef uint64_t hashvalue_t;
+
 
 template <typename StreamT, typename ValueT>
 inline void write_value(std::ostream& os, ValueT value)

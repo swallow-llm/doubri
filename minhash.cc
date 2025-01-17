@@ -22,7 +22,6 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include <bit>
 #include <cstdint>
 #include <fstream>
 #include <iomanip>
@@ -30,7 +29,6 @@ SOFTWARE.
 #include <string>
 #include <unordered_set>
 #include <vector>
-#include <byteswap.h>
 
 #include <utf8.h>
 #include <nlohmann/json.hpp>
@@ -41,6 +39,7 @@ SOFTWARE.
 #include "minhash.hpp"
 
 using json = nlohmann::json;
+typedef uint64_t hashvalue_t;
 
 /**
  * Generate n-grams from a UTF-8 string.
@@ -48,7 +47,7 @@ using json = nlohmann::json;
  *
  *  @param  str     A string.
  *  @param  ngrams  An unordered set of strings to store n-grams.
- *  @param  n       The number of letters (N).
+ *  @param  n       The number of letters of n-grams (N).
  */
 void ngram(const std::string& str, std::unordered_set<std::string>& ngrams, int n)
 {
@@ -78,29 +77,23 @@ void ngram(const std::string& str, std::unordered_set<std::string>& ngrams, int 
 
 /**
  * Generate MinHash values for given strings.
- *  This function generates {num} MinHash values (in uint64_t) by using
- *  hash functions #{begin}, #{begin+1}, ..., #{begin+num}, and write
- *  MinHash values to the buffer of {num} * sizeof(hashvalue_t) bytes.
  *
- *  @param  strs    A target item represented as strings.
- *  @param  out     A pointer to the buffer to receive MinHash values.
- *  @param  begin   A beginning number of hash functions.
- *  @param  num     A number of MinHash values to generate.
+ *  @param  first   An iterator to the first element of n-grams.
+ *  @param  last    An iterator to the last element of n-grams.
+ *  @param  seed    A seed number for hashing.
+ *  @return         The MinHash value computed from the n-grams.
  */
 template <class IteratorType>
-void minhash(IteratorType first, IteratorType last, hashvalue_t *out, size_t begin, size_t num)
+uint64_t minhash(IteratorType first, IteratorType last, int seed)
 {
-    for (size_t i = 0; i < num; ++i) {
-        const size_t seed = begin + i;
-        uint64_t min = 0xFFFFFFFFFFFFFFFF;
-        for (auto it = first; it != last; ++it) {
-            uint64_t hv = XXH64(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
-            if (hv < min) {
-                min = hv;
-            }
+    uint64_t min = UINT64_MAX;
+    for (auto it = first; it != last; ++it) {
+        uint64_t hv = XXH64(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
+        if (hv < min) {
+            min = hv;
         }
-        out[i] = min;
     }
+    return min;
 }
 
 int main(int argc, char *argv[])
@@ -206,10 +199,12 @@ int main(int argc, char *argv[])
 
         // Generate buckets from #{begin} to #{end-1}.
         hashvalue_t buffer[(end-begin) * num_hash_values];
+        hashvalue_t *p = buffer;
         for (int i = begin; i < end; ++i) {
-            size_t offset = (i-begin) * num_hash_values;
-            // Compute min-hash values.
-            minhash(features.begin(), features.end(), &buffer[offset], i * num_hash_values, num_hash_values);
+            for (int j = 0; j < num_hash_values; ++j) {
+                // Compute a min-hash value.
+                *p++ = minhash(features.begin(), features.end(), i * num_hash_values + j);
+            }
         }
 
         // Put the buckets to the writer.

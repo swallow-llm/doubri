@@ -22,8 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-//#define USE_XXHASH
-#define USE_MURMURHASH3
+#define USE_XXHASH
 
 #include <cstdint>
 #include <fstream>
@@ -191,15 +190,16 @@ int main(int argc, char *argv[])
 
         // An array to store MinHash values.
         hashvalue_t mins[(end-begin) * num_hash_values] = {max_hashvalue};
-        hashvalue_t hvs[(end-begin) * num_hash_values] = {0};
 
         for (auto it = features.begin(); it != features.end(); ++it) {
-            hashvalue_t *p = hvs;
-            for (int seed = begin * num_hash_values; seed < end * num_hash_values; ++seed) {
+            // Compute all hash values for the n-gram.
+            hashvalue_t hvs[(end-begin) * num_hash_values];
+            for (int i = 0; i < (end-begin) * num_hash_values; ++i) {
+                const int seed = begin * num_hash_values + i;
 #if     defined(USE_XXHASH)
-                *p++ = XXH3_64bits_withSeed(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
+                hvs[i] = XXH3_64bits_withSeed(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
 #elif   defined(USE_MURMURHASH3)
-                MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), seed, p++);
+                MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), seed, &hvs[i]);
 #endif
             }
             for (int i = 0; i < (end-begin) * num_hash_values; ++i) {

@@ -37,6 +37,7 @@ SOFTWARE.
 #include <argparse/argparse.hpp>
 
 #if     defined(USE_XXHASH)
+#define XXH_INLINE_ALL
 #include <xxhash.h>
 typedef uint64_t hashvalue_t;
 const hashvalue_t max_hashvalue = UINT64_MAX;
@@ -189,20 +190,22 @@ int main(int argc, char *argv[])
         ngram(text, features, n);
 
         // An array to store MinHash values.
-        hashvalue_t mins[(end-begin) * num_hash_values] = {max_hashvalue};
+        hashvalue_t mins[H] = {max_hashvalue};
 
         for (auto it = features.begin(); it != features.end(); ++it) {
             // Compute all hash values for the n-gram.
-            hashvalue_t hvs[(end-begin) * num_hash_values];
-            for (int i = 0; i < (end-begin) * num_hash_values; ++i) {
-                const int seed = begin * num_hash_values + i;
+            hashvalue_t hvs[H];
+            int seed = begin * num_hash_values;
+            for (int i = 0; i < H; ++i, ++seed) {
 #if     defined(USE_XXHASH)
                 hvs[i] = XXH3_64bits_withSeed(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
 #elif   defined(USE_MURMURHASH3)
                 MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), seed, &hvs[i]);
 #endif
             }
-            for (int i = 0; i < (end-begin) * num_hash_values; ++i) {
+
+            // Keep the minimums of hash values.
+            for (int i = 0; i < H; ++i) {
                 mins[i] = std::min(mins[i], hvs[i]);
             }
         }

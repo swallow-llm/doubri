@@ -150,7 +150,7 @@ int main(int argc, char *argv[])
     const bool quiet = program.get<bool>("quiet");
     const auto filename = program.get<std::string>("filename");
     const auto field = program.get<std::string>("text");
-    const std::string empty(n, '_');
+    const int H = (end - begin) * num_hash_values;
 
     // Show the parameters.
     if (!quiet) {

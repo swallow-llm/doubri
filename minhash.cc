@@ -22,7 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#define USE_XXHASH
+//#define USE_XXHASH
+#define USE_MURMURHASH3
 
 #include <cstdint>
 #include <fstream>
@@ -38,8 +39,14 @@ SOFTWARE.
 
 #if     defined(USE_XXHASH)
 #include <xxhash.h>
+typedef uint64_t hashvalue_t;
+const hashvalue_t max_hashvalue = UINT64_MAX;
+
 #elif   defined(USE_MURMURHASH3)
 #include "MurmurHash3.h"
+typedef uint32_t hashvalue_t;
+const hashvalue_t max_hashvalue = UINT32_MAX;
+
 #endif
 
 #include "common.h"
@@ -83,61 +90,6 @@ void ngram(const std::string& str, std::unordered_set<std::string>& ngrams, int 
         ngrams.insert(s);
     }
 }
-
-#if     defined(USE_XXHASH)
-
-/**
- * Generate MinHash values for given strings.
- *  This function returns \c UINT64_MAX if the given n-grams are empty.
- *
- *  @param  first   An iterator to the first element of n-grams.
- *  @param  last    An iterator to the last element of n-grams.
- *  @param  seed    A seed number for hashing.
- *  @return         The MinHash value computed from the n-grams.
- */
-template <class IteratorType>
-uint64_t minhash(IteratorType first, IteratorType last, int seed)
-{
-    uint64_t min = UINT64_MAX;
-    for (auto it = first; it != last; ++it) {
-        uint64_t hv = XXH64(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
-        if (hv < min) {
-            min = hv;
-        }
-    }
-    return min;
-}
-
-typedef uint64_t hashvalue_t;
-
-#elif   defined(USE_MURMURHASH3)
-
-/**
- * Generate MinHash values for given strings.
- *  This function returns \c UINT32_MAX if the given n-grams are empty.
- *
- *  @param  first   An iterator to the first element of n-grams.
- *  @param  last    An iterator to the last element of n-grams.
- *  @param  seed    A seed number for hashing.
- *  @return         The MinHash value computed from the n-grams.
- */
-template <class IteratorType>
-uint32_t minhash(IteratorType first, IteratorType last, int seed)
-{
-    uint32_t min = UINT32_MAX;
-    for (auto it = first; it != last; ++it) {
-        uint32_t hv;
-        MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), seed, &hv);
-        if (hv < min) {
-            min = hv;
-        }
-    }
-    return min;
-}
-
-typedef uint32_t hashvalue_t;
-
-#endif
 
 int main(int argc, char *argv[])
 {
@@ -238,19 +190,25 @@ int main(int argc, char *argv[])
         ngram(text, features, n);
 
         // An array to store MinHash values.
-        hashvalue_t buffer[(end-begin) * num_hash_values] = {0};
+        hashvalue_t mins[(end-begin) * num_hash_values] = {max_hashvalue};
+        hashvalue_t hvs[(end-begin) * num_hash_values] = {0};
 
-        // Generate buckets from #{begin} to #{end-1}.
-        hashvalue_t *p = buffer;
-        for (int i = begin; i < end; ++i) {
-            for (int j = 0; j < num_hash_values; ++j) {
-                // Compute a min-hash value.
-                *p++ = minhash(features.begin(), features.end(), i * num_hash_values + j);
+        for (auto it = features.begin(); it != features.end(); ++it) {
+            hashvalue_t *p = hvs;
+            for (int seed = begin * num_hash_values; seed < end * num_hash_values; ++seed) {
+#if     defined(USE_XXHASH)
+                *p++ = XXH3_64bits_withSeed(reinterpret_cast<const void*>(it->c_str()), it->size(), seed);
+#elif   defined(USE_MURMURHASH3)
+                MurmurHash3_x86_32(reinterpret_cast<const void*>(it->c_str()), it->size(), seed, p++);
+#endif
+            }
+            for (int i = 0; i < (end-begin) * num_hash_values; ++i) {
+                mins[i] = std::min(mins[i], hvs[i]);
             }
         }
 
         // Put the buckets to the writer.
-        mw.put(buffer);
+        mw.put(mins);
     }
 
     // Close the writer.

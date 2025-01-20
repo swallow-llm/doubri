@@ -189,8 +189,9 @@ int main(int argc, char *argv[])
         std::unordered_set<std::string> features;
         ngram(text, features, n);
 
-        // An array to store MinHash values.
-        hashvalue_t mins[H] = {max_hashvalue};
+        // Initialize an array to store MinHash values with the max value.
+        hashvalue_t mins[H];
+        std::fill_n(mins, H, max_hashvalue);
 
         for (auto it = features.begin(); it != features.end(); ++it) {
             // Compute all hash values for the n-gram.

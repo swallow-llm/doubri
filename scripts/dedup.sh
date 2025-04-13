@@ -5,7 +5,7 @@ YEAR=$1
 find /s3 -maxdepth 1 -type d -name "CC-MAIN-$YEAR-*" | sed "s:s3:data/minhash:g" | xargs mkdir -p
 
 # Compute MinHash buckets.
-find /s3/CC-MAIN-$YEAR-* -name '*.jsonl.gz' | parallel -j47 --progress 'zcat {} | ./build/doubri-minhash -q {= s:s3:data/minhash:; s:.jsonl.gz:.mh: =}'
+find /s3/CC-MAIN-$YEAR-* -name '*.jsonl.gz' | parallel --progress 'zcat {} | ./build/doubri-minhash -q {= s:s3:data/minhash:; s:.jsonl.gz:.mh: =}'
 
 # Deduplicate.
 mkdir -p /data/dedup

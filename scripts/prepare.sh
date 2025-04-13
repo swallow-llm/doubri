@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Install necessary packages.
-sudo yum install lvm2 g++ cmake tbb tbb-devel
+sudo yum install lvm2 g++ cmake tbb tbb-devel parallel
 
 # Prepare SSD drive and mount at /data .
 sudo pvcreate /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1

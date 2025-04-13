@@ -9,15 +9,15 @@ sudo vgcreate ssdgroup /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1
 sudo lvcreate -l 100%FREE -n lv0 ssdgroup
 sudo mkfs -t ext4 /dev/ssdgroup/lv0
 sudo mkdir /data
-sudo chmod 777 /data
 sudo mount /dev/ssdgroup/lv0 /data
+sudo chmod 777 /data
 
 # Mount S3 at /s3 .
 wget https://s3.amazonaws.com/mountpoint-s3-release/latest/x86_64/mount-s3.rpm
 sudo yum install ./mount-s3.rpm
 sudo mkdir /s3
-sudo chmod 777 /s3
 mount-s3 swallow-corpus-cc /s3
+sudo chmod 777 /s3
 
 # Build Doubri binaries.
-./script/build.sh
+./scripts/build.sh

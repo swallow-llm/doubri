@@ -424,8 +424,8 @@ public:
             m_logger.info("[#{}] Save the untrimmed index to: {}", bucket_number, writer.m_filename);
             spdlog::stopwatch sw_save;
             for (auto it = m_items.begin(); it != m_items.end(); ++it) {
-                // Write items that are non duplicates in this trial.
-                if (m_flags[it->i] != 'd') {
+                // Write items that are non duplicates.
+                if (m_flags[it->i] == ' ') {
                     writer.write_item(it->i, it->ptr());
                 }
             }
@@ -613,10 +613,17 @@ int main(int argc, char *argv[])
 
     // Initialize the console logger.
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-console")));
+    auto console_log_level = spdlog::level::from_str(program.get<std::string>("log-level-console"));
+    console_sink->set_level(console_log_level);
+
+    // Initialize the file logger.
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
-    file_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-file")));
+    auto file_log_level = spdlog::level::from_str(program.get<std::string>("log-level-file"));
+    file_sink->set_level(file_log_level);
+
+    // Create the logger that integrates console and file loggers.
     spdlog::logger logger("doubri-dedup", {console_sink, file_sink});
+    logger.flush_on(file_log_level);
 
     // The deduplication object.
     MinHashLSH dedup(logger);
@@ -659,7 +666,7 @@ int main(int argc, char *argv[])
     // Perform deduplication.
     dedup.run(basename, reverse, !no_index);
 
-    //
+    // Trim the indices.
     if (!no_index) {
         dedup.trim(basename);
     }

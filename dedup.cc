@@ -152,6 +152,12 @@ struct Element {
         return s_buffer + i * s_bytes_per_bucket;
     }
 
+    const uint8_t split() const
+    {
+        const uint8_t *p = this->ptr();
+        return p[s_bytes_per_bucket-1];
+    }
+
     /**
      * Represents an element with the item number and bucket.
      *
@@ -207,9 +213,11 @@ protected:
     std::vector<Element> m_items;
     std::vector<char> m_flags;
     spdlog::logger& m_logger;
+    uint16_t m_group;
 
 public:
-    MinHashLSH(spdlog::logger& logger) : m_logger(logger)
+    MinHashLSH(spdlog::logger& logger, uint16_t group) :
+        m_logger(logger), m_group(group)
     {
     }
 
@@ -242,6 +250,8 @@ public:
         m_begin = 0;
         m_end = 0;
 
+        m_logger.info("group: {}", m_group);
+	
         // Open the hash files to retrieve parameters.
         m_logger.info("num_minhash_files: {}", m_hfs.size());
         for (auto& hf : m_hfs) {
@@ -365,54 +375,24 @@ public:
         // Count the number of inactive items.
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
-        // Find duplicated items.
-        spdlog::stopwatch sw_find;
-        m_logger.info("[#{}] Find duplicates", bucket_number);
-        for (auto cur = m_items.begin(); cur != m_items.end(); ) {
-            // Find the next item that has a different bucket from the current one.
-            auto next = cur + 1;
-            while (next != m_items.end() && *cur == *next) {
-                ++next;
-            }
+        // Save the index files.
+        spdlog::stopwatch sw_index;
+    	m_logger.info("[#{}] Write non-duplicate items to the untrimmed index: {}", bucket_number, basename);
 
-#ifdef  DEBUG_DUPLICATES
-            bool has_duplicates = (next != cur + 1);
-            if (has_duplicates) {
-                std::cout << "Duplicate: " << cur->i;
-            }
-#endif/*DEBUG_DUPLICATES*/
+        // Split the index into 256 files. Because reading and writing
+        // a large file is slow, we split the index into 256 files so that
+        // we can read, merge, and write individual index files in parallel.
+        tbb::parallel_for((size_t)SPLIT_BEGIN, (size_t)SPLIT_END, [&](size_t split) {
 
-            // Mark a duplication flag for every item with the same bucket.
-            for (++cur; cur != next; ++cur) {
-                // Mark the item with a local duplicate flag (within this trial).
-                m_flags[cur->i] = 'd';
-#ifdef  DEBUG_DUPLICATES
-                std::cout << " " << cur->i;
-#endif/*DEBUG_DUPLICATES*/
-            }
-
-#ifdef  DEBUG_DUPLICATES
-            if (has_duplicates) {
-                std::cout << std::endl;
-            }
-#endif/*DEBUG_DUPLICATES*/
-        }
-        m_logger.info("[#{}] Completed finding duplicates in {:.3f} seconds", bucket_number, sw_find);
-
-        // Count the number of active and detected (as duplicates) items.
-        size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
-        size_t num_detected = std::count(m_flags.begin(), m_flags.end(), 'd');
-
-        // Save the index.
-        if (save_index) {
             // Open an index file (untrimmed).
             IndexWriter writer;            
             std::string msg = writer.open(
                 basename,
                 bucket_number,
+                (uint8_t)split,
                 bytes_per_bucket,
-                m_num_items,
-                m_num_items - num_detected,
+                0, // We will find and update this number later.
+                0, // We will find and update this number later.
                 false
                 );
             if (!msg.empty()) {
@@ -420,17 +400,62 @@ public:
                 throw MinHashLSHException();
             }
 
-            // Write the index to the file.
-            m_logger.info("[#{}] Save the untrimmed index to: {}", bucket_number, writer.m_filename);
-            spdlog::stopwatch sw_save;
-            for (auto it = m_items.begin(); it != m_items.end(); ++it) {
-                // Write items that are non duplicates.
-                if (m_flags[it->i] == ' ') {
-                    writer.write_item(it->i, it->ptr());
+            size_t num_total_items = 0;
+	        size_t num_active_items = 0;
+            for (auto cur = m_items.begin(); cur != m_items.end(); ) {
+                // Skip items that do not belong to the split.
+                if (cur->split() != split) {
+                    ++cur;
+                    continue;
                 }
-            }
-            m_logger.info("[#{}] Completed saving the index in {:.3f} seconds", bucket_number, sw_save);
-        }
+	    
+                // Find the next item that has a different bucket from the current one.
+                auto next = cur + 1;
+                while (next != m_items.end() && *cur == *next) {
+	                ++next;
+                }
+
+#ifdef  DEBUG_DUPLICATES
+                bool has_duplicates = (next != cur + 1);
+                if (has_duplicates) {
+	                std::cout << "Duplicate: " << cur->i;
+                }
+#endif/*DEBUG_DUPLICATES*/
+
+                // Write the current item to the index if it is not a duplicate.
+                if (m_flags[cur->i] == ' ') {
+	                writer.write_item(m_group, cur->i, cur->ptr());
+	                ++num_active_items;
+	            }
+                ++num_total_items;
+
+                // Mark a duplication flag for every item of the same bucket.
+                for (++cur; cur != next; ++cur) {
+	                // Mark the item with a local duplicate flag (within this trial).
+	                m_flags[cur->i] = 'd';
+                    ++num_total_items;
+#ifdef  DEBUG_DUPLICATES
+	                std::cout << " " << cur->i;
+#endif/*DEBUG_DUPLICATES*/
+                }
+
+#ifdef  DEBUG_DUPLICATES
+                if (has_duplicates) {
+	                std::cout << std::endl;
+                }
+#endif/*DEBUG_DUPLICATES*/
+	        }
+            m_logger.info("[#{}] Split {:02x} has {} / {} items.", bucket_number, split, num_active_items, num_total_items);
+
+            // Update the header of the index with item numbers.
+	        writer.update_num_active_items(num_active_items);
+            writer.update_num_total_items(num_total_items);
+	    });
+    	m_logger.info("[#{}] Completed writing the index in {:.3f} seconds", bucket_number, sw_index);
+	
+        // Find the numbers of active and detected items.
+        size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
+        size_t num_detected = std::count(m_flags.begin(), m_flags.end(), 'd');
 
         // Change local duplicate flags into global ones.
         for (auto it = m_flags.begin(); it != m_flags.end(); ++it) {
@@ -441,13 +466,13 @@ public:
         double active_ratio = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;
         double detection_ratio = 0 < m_num_items ? num_detected / (double)m_num_items : 0.;
         m_logger.info(
-            "[#{}] Completed: {{"
+            "[#{}] Deduplication completed: {{"
             "\"num_active_before\": {}, "
             "\"num_detected\": {}, "
             "\"num_active_after\": {}, "
             "\"active_ratio\": {:.05f}, "
             "\"detection_ratio\": {:.05f}, "
-            "\"time: {:.03f}"
+            "\"time\": {:.03f}"
             "}}",
             bucket_number,
             num_active_before,
@@ -459,14 +484,20 @@ public:
             );
     }
 
-    void run(const std::string& basename, bool reverse = false, bool save_index = true)
+    void run(const std::string& basename, bool reverse = false)
     {
         spdlog::stopwatch sw;
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
+        // Deduplication for each bucket number.
         for (size_t bn = m_begin; bn < m_end; ++bn) {
             m_logger.info("Deduplication for #{}", bn);
-            deduplicate_bucket(basename, bn, reverse, save_index);
+            deduplicate_bucket(basename, bn, reverse);
+        }
+
+        // Trimming inactive items across different bucket numbers.
+        for (size_t bn = m_begin; bn < m_end; ++bn) {
+            trim_bucket_array(basename, bn);
         }
         
         size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
@@ -484,7 +515,7 @@ public:
             "\"num_active_after\": {}, "
             "\"active_ratio_before\": {:.05f}, "
             "\"active_ratio_after\": {:.05f}, "
-            "\"time\": {:.3f}"
+            "\"time\": {:.03f}"
             "}}",
             m_num_items,
             m_bytes_per_hash,
@@ -499,70 +530,93 @@ public:
             );
     }
 
-    void trim_bucket_array(const std::string& basename, size_t bucket_number)
+    size_t get_active_items_in_index(const std::string& basename, size_t bucket_number, bool trimmed)
     {
-        std::string msg;
-
-        // Open an untrimmed index file for reading.
-        IndexReader reader;
-        msg = reader.open(basename, bucket_number, false);
-        if (!msg.empty()) {
-            m_logger.critical(msg);
-            throw MinHashLSHException();
-        }
-
-        // Open a trimmed index file for writing.
-        IndexWriter writer;
-        msg = writer.open(
-            basename,
-            bucket_number,
-            reader.m_bytes_per_bucket,
-            reader.m_num_total_items,
-            0,  // Set this to zero for now (we will find out later)
-            true);
-        if (!msg.empty()) {
-            m_logger.critical(msg);
-            throw MinHashLSHException();
-        }
-
-        spdlog::stopwatch sw;
-        m_logger.info("[#{}] Trim inactive items: {} => {}", bucket_number, reader.m_filename, writer.m_filename);
-        m_logger.info("[#{}] The number of active items in the untrimmed index: {}", bucket_number, reader.m_num_active_items);
-
-        // Write items that are active across different bucket arrays.
         size_t num_active_items = 0;
-        for (size_t j = 0; j < reader.m_num_active_items; ++j) {
-            if (!reader.next()) {
-                m_logger.critical("Premature EOF of the index file: {}", reader.m_filename);
-                throw MinHashLSHException();
-            }
-            // Write the item if the current item is active.
-            if (m_flags[reader.inum()] == ' ') {
-                ++num_active_items;
-                if (!writer.write_raw(reader.ptr())) {
-                    m_logger.critical("Failed to write an element to the index file: {}", writer.m_filename);
-                    throw MinHashLSHException();
-                }
-            }
+        for (size_t split = SPLIT_BEGIN; split < SPLIT_END; ++split) {
+            IndexReader reader;
+            std::string msg = reader.open(basename, bucket_number, (uint8_t)split, trimmed);
+            num_active_items += reader.m_num_active_items;
         }
-
-        // Write the number of active items.
-        writer.update_num_active_items(num_active_items);
-        m_logger.info("[#{}] The number of active items in the trimmed index: {}", bucket_number, num_active_items);
-
-        // Delete the untrimmed index file.
-        const std::string file_to_be_deleted = reader.m_filename;
-        reader.close();
-        std::filesystem::remove(file_to_be_deleted);
-
-        m_logger.info("[#{}] Completed trimming the index in {:.3f} seconds", bucket_number, sw);
+        return num_active_items;
     }
 
-    void trim(const std::string& basename)
+    void trim_bucket_array(const std::string& basename, size_t bucket_number)
     {
-        for (size_t bn = m_begin; bn < m_end; ++bn) {
-            trim_bucket_array(basename, bn);
-        }
+        spdlog::stopwatch sw;
+
+        // Find the number of active items.
+        size_t num_active_before = get_active_items_in_index(basename, bucket_number, false);
+        m_logger.info("[#{}] Trim inactive ones in {} items.", bucket_number, num_active_before);
+
+        tbb::parallel_for((size_t)SPLIT_BEGIN, (size_t)SPLIT_END, [&](size_t split) {
+            spdlog::stopwatch sw_split;
+
+            std::string msg;
+            // Open an untrimmed index file for reading.
+            IndexReader reader;
+            msg = reader.open(basename, bucket_number, (uint8_t)split, false);
+            if (!msg.empty()) {
+                m_logger.critical(msg);
+                throw MinHashLSHException();
+            }
+
+            // Open a trimmed index file for writing.
+            IndexWriter writer;
+            msg = writer.open(
+                basename,
+                bucket_number,
+                (uint8_t)split,
+                reader.m_bytes_per_bucket,
+                reader.m_num_total_items,
+                0, // We will find and update this number later.
+                true);
+            if (!msg.empty()) {
+                m_logger.critical(msg);
+                throw MinHashLSHException();
+            }
+
+            // Write items that are active across different bucket arrays.
+            size_t num_active_items = 0;
+            for (size_t j = 0; j < reader.m_num_active_items; ++j) {
+                if (!reader.next()) {
+                    m_logger.critical("Premature EOF of the index file: {}", reader.m_filename);
+                    throw MinHashLSHException();
+                }
+                // Write the item if the current item is active.
+                if (m_flags[reader.inum()] == ' ') {
+                    ++num_active_items;
+                    if (!writer.write_raw(reader.ptr())) {
+                        m_logger.critical("Failed to write an element to the index file: {}", writer.m_filename);
+                        throw MinHashLSHException();
+                    }
+                }
+            }
+
+            // Write the number of active items.
+            writer.update_num_active_items(num_active_items);
+
+            // Delete the untrimmed index file.
+            const std::string file_to_be_deleted = reader.m_filename;
+            reader.close();
+            std::filesystem::remove(file_to_be_deleted);
+
+            m_logger.info("[#{}:{:02x}] Completed trimming the index in {:.3f} seconds: {} -> {}", bucket_number, split, sw_split, reader.m_num_active_items, num_active_items);
+        });
+
+        // Find the number of active items after trimming.
+        size_t num_active_after = get_active_items_in_index(basename, bucket_number, true);
+        m_logger.info(
+            "[#{}] Trimming completed: {{"
+            "\"num_active_before\": {}, "
+            "\"num_active_after\": {}, "
+            "\"time\": {:.03f}"
+            "}}",
+            bucket_number,
+            num_active_before,
+            num_active_after,
+            sw
+            );
     }
 };
 
@@ -575,9 +629,11 @@ int main(int argc, char *argv[])
         .help("keep older duplicated items (newer items, by default)")
         .default_value(false)
         .flag();
-    program.add_argument("-n", "--no-index")
-        .help("does not save index files after deduplication")
-        .flag();
+    program.add_argument("-g", "--group")
+        .help("specifies a group number (in [0, 65535]) of the items")
+        .scan<'d', uint16_t>()
+        .nargs(1)
+        .required();
     program.add_argument("-l", "--log-level-console")
         .help("sets a log level for console")
         .default_value(std::string{"warning"})
@@ -605,8 +661,8 @@ int main(int argc, char *argv[])
 
     // Retrieve parameters.
     const auto basename = program.get<std::string>("basename");
-    const auto no_index = program.get<bool>("no-index");
     const auto reverse = program.get<bool>("reverse");
+    const auto group = program.get<uint16_t>("group");
     const std::string flagfile = basename + std::string(".dup");
     const std::string logfile = basename + std::string(".log");
     const std::string srcfile = basename + std::string(".src");
@@ -626,7 +682,7 @@ int main(int argc, char *argv[])
     logger.flush_on(file_log_level);
 
     // The deduplication object.
-    MinHashLSH dedup(logger);
+    MinHashLSH dedup(logger, group);
 
     // One MinHash file per line.
     for (;;) {
@@ -664,12 +720,7 @@ int main(int argc, char *argv[])
     }
 
     // Perform deduplication.
-    dedup.run(basename, reverse, !no_index);
-
-    // Trim the indices.
-    if (!no_index) {
-        dedup.trim(basename);
-    }
+    dedup.run(basename, reverse);
 
     // Store the flag file.
     dedup.save_flag(flagfile);

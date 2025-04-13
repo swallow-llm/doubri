@@ -30,14 +30,14 @@ SOFTWARE.
 #include <string>
 #include <byteswap.h>
 
-std::string get_index_filename(const std::string& basename, size_t bucket_number, bool trimmed)
+std::string get_index_filename(const std::string& basename, size_t bucket_number, uint8_t split, bool trimmed)
 {
     std::stringstream ss;
-    if (trimmed) {
-        ss << basename << ".idx." << std::setfill('0') << std::setw(5) << bucket_number;
-    } else {
-        ss << basename << ".index." << std::setfill('0') << std::setw(5) << bucket_number;
-    }
+    ss << basename;
+    ss << (trimmed ? ".idx." : ".index.");
+    ss << std::setfill('0') << std::setw(5) << bucket_number;
+    ss << ".";
+    ss << std::setfill('0') << std::setw(2) << std::hex << (int)split;
     return ss.str();
 }
 
@@ -82,6 +82,7 @@ public:
     std::string open(
         const std::string& basename,
         size_t bucket_number = 0,
+	uint8_t split = 0,
         size_t bytes_per_bucket = 0,
         size_t num_total_items = 0,
         size_t num_active_items = 0,
@@ -95,7 +96,7 @@ public:
         m_num_active_items = num_active_items;
 
         // Obtain the filename for the index.
-        m_filename = get_index_filename(basename, bucket_number, trimmed);
+        m_filename = get_index_filename(basename, bucket_number, split, trimmed);
 
         // Open the file in binary mode.
         m_ofs.open(m_filename, std::ios::binary);
@@ -153,15 +154,16 @@ public:
 
     /**
      * Write an element to the bucket array.
-     *  This function writes a bucket in \c m_bytes_per_bucket bytes and an
-     *  item number in 64 bit (little endian).
+     *  This function writes a bucket in \c m_bytes_per_bucket bytes and
+     *  group (16 bit) and item numbers (48 bit) in 64 bit (little endian).
+     *  @param  g       The group number.
      *  @param  i       The item number.
      *  @param  bucket  The pointer to the bucket (byte stream).
      *  @return         \c true if successful; \c false otherwise.    
      */
-    bool write_item(size_t i, const uint8_t *bucket)
+    bool write_item(size_t g, size_t i, const uint8_t *bucket)
     {
-        uint64_t v = i;
+        uint64_t v = (g & 0xFFFF) << 48 | (i & 0x0000FFFFFFFFFFFF);
         if constexpr (std::endian::native == std::endian::little) {
             // Use std::byteswap when C++23 is supported by most compilers.
             // v = std::byteswap(v);
@@ -230,10 +232,10 @@ public:
      *  @param  trimmed             Whether the items are "trimmed"
      *  @return                     The error message if any (an empty string with no error).
      */
-    std::string open(const std::string& basename, size_t bucket_number, bool trimmed)
+    std::string open(const std::string& basename, size_t bucket_number, uint8_t split, bool trimmed)
     {
         // Obtain the filename for the index.
-        m_filename = get_index_filename(basename, bucket_number, trimmed);
+        m_filename = get_index_filename(basename, bucket_number, split, trimmed);
 
         // Open the file in binary mode.
         m_ifs.open(m_filename, std::ios::binary);
@@ -334,13 +336,27 @@ public:
     }
 
     /**
+     * Obtain a group number of the current element.
+     *  @return     The group number.
+     */
+    size_t gnum() const
+    {
+        size_t v = 0;
+        for (size_t i = 0; i < 2; ++i) {
+            v <<= 8;
+            v |= m_bs[m_bytes_per_bucket + i];
+        }
+        return v;
+    }
+
+    /**
      * Obtain an item number of the current element.
      *  @return     The item number.
      */
     size_t inum() const
     {
         size_t v = 0;
-        for (size_t i = 0; i < 8; ++i) {
+        for (size_t i = 2; i < 8; ++i) {
             v <<= 8;
             v |= m_bs[m_bytes_per_bucket + i];
         }

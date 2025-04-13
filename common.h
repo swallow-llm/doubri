@@ -31,8 +31,8 @@ SOFTWARE.
 #include <byteswap.h>
 
 #define __DOUBRI_VERSION__ "2.0"
-
-
+#define SPLIT_BEGIN 0
+#define SPLIT_END   256
 
 template <typename StreamT, typename ValueT>
 inline void write_value(std::ostream& os, ValueT value)

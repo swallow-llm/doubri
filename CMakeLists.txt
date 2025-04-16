@@ -15,6 +15,9 @@ target_compile_options(doubri-dedup PUBLIC)
 add_executable(doubri-merge merge.cc)
 target_compile_options(doubri-merge PUBLIC)
 
+add_executable(doubri-similarity similarity.cc)
+target_compile_options(doubri-similarity PUBLIC)
+
 # OneTBB
 find_package(TBB REQUIRED)
 target_link_libraries(doubri-dedup TBB::tbb)

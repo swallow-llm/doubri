@@ -11,7 +11,7 @@ df.fillna('')
 D = []
 for index, row in df.iterrows():
     D.append(dict(
-        id=len(D),
+        id=str(len(D)),
         text=row['Message'] if not pd.isna(row['Message']) else '',
     ))
 

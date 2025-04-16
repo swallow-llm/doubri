@@ -170,8 +170,8 @@ public:
             v = bswap_64(v);
         }
 
-        m_ofs.write(reinterpret_cast<const char*>(bucket), m_bytes_per_bucket);
         writeval<uint64_t>(m_ofs, v);
+        m_ofs.write(reinterpret_cast<const char*>(bucket), m_bytes_per_bucket);
         return !m_ofs.fail();
     }
 
@@ -182,7 +182,7 @@ public:
      */
     bool write_raw(const uint8_t *buffer)
     {
-        m_ofs.write(reinterpret_cast<const char*>(buffer), m_bytes_per_bucket + sizeof(uint64_t));
+        m_ofs.write(reinterpret_cast<const char*>(buffer), sizeof(uint64_t) + m_bytes_per_bucket);
         return !m_ofs.fail();
     }
 
@@ -253,7 +253,7 @@ public:
         // Read the parameters in the header.
         m_bucket_number = readval<uint32_t, size_t>(m_ifs);
         m_bytes_per_bucket = readval<uint32_t, size_t>(m_ifs);
-        m_bytes_per_item = m_bytes_per_bucket + 8;
+        m_bytes_per_item = sizeof(uint64_t) + m_bytes_per_bucket;
         m_num_total_items = readval<uint64_t, size_t>(m_ifs);
         m_num_active_items = readval<uint64_t, size_t>(m_ifs);
 
@@ -329,7 +329,7 @@ public:
     std::string bucket() const
     {
         std::stringstream ss;
-        for (size_t i = 0; i < m_bytes_per_bucket; ++i) {
+        for (size_t i = sizeof(uint64_t); i < m_bytes_per_item; ++i) {
             ss << std::hex << std::setfill('0') << std::setw(2) << (int)m_bs[i];
         }
         return ss.str();
@@ -344,7 +344,7 @@ public:
         size_t v = 0;
         for (size_t i = 0; i < 2; ++i) {
             v <<= 8;
-            v |= m_bs[m_bytes_per_bucket + i];
+            v |= m_bs[i];
         }
         return v;
     }
@@ -358,7 +358,7 @@ public:
         size_t v = 0;
         for (size_t i = 2; i < 8; ++i) {
             v <<= 8;
-            v |= m_bs[m_bytes_per_bucket + i];
+            v |= m_bs[i];
         }
         return v;
     }

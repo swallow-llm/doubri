@@ -25,7 +25,6 @@ SOFTWARE.
 #include <cstdint>
 #include <functional>
 #include <iostream>
-#include <queue>
 
 #include <argparse/argparse.hpp>
 #include <spdlog/spdlog.h>
@@ -37,198 +36,178 @@ SOFTWARE.
 #include "index.hpp"
 
 /**
- * An element (bucket, group, and item) of indices (sorted lists).
- *
- *  This class implements strong ordering and equality of index elements so
- *  that we can merge K sorted lists of elements by using a priority queue.
- *  This class does not hold a byte sequence representing a bucket, group,
- *  and item but only stores a pointer to a reader object \c m_reader. This
- *  prevents copying a byte sequence itself when insering an element into a
- *  priority queue.
+ * An item in an index (a list of sorted buckets with their IDs).
  */
-struct Element {
-    IndexReader* reader{nullptr};
+struct Item {
+    /// Item ID.
+    uint64_t id;
+    /// Bucket byte-stream.
+    uint8_t bucket[1];  // Flexible array member (variable size).
+};
 
+class ItemArray {
+public:
+    /// Whether this object should manage the memory for m_items.
+    bool m_managed{false};
+    /// Index number of the first item. 
+    size_t m_begin{0};
+    /// Index number of the next to the last item.
+    size_t m_end{0};
+    /// Number of items in the array.
+    size_t m_length{0}:
+    /// Number of bytes per item.
+    size_t m_bytes_per_item{0};
+    /// The item array.
+    uint8_t* m_items{nullptr};
+
+public:
     /**
-     * Spaceship operator for comparing elements (bucket, group, and item).
-     *
-     * This defines dictionary order of buckets, groups, and items in this
-     * priority. Because a byte sequence includes a bucket, group, and item
-     * in this order, we can simply compare the two vectors associated with
-     * the items.
-     *
-     *  @param  x   An element.
-     *  @param  y   Another element.
-     *  @return std::strong_ordering    The order of the two elements.
+     * Constructs by default.
      */
-    friend auto operator<=>(const Element& x, const Element& y) -> std::strong_ordering
+    ItemArray()
     {
-        return x.reader->vec() <=> y.reader->vec();
     }
 
     /**
-     * Equality operator for comparing elements (bucket, group, and item).
-     *
-     * This defines the equality of two buckets. Unlike the operator <=>,
-     * this function does not consider group and item numbers of the elements
-     * for equality, ignoring the last 8 bytes.
-     *
-     *  @param  x   An item.
-     *  @param  y   Another item.
-     *  @return bool    \c true when two items have the same bucket,
-     *                  \c false otherwise.
+     * Constructs with an external array.
+     *  @param  items   The pointer to the external array.
+     *  @param  length  The number of items in the external array.
+     *  @param  bytes_per_item  The number of bytes per item.
+     *  @param  begin   The index number of the first item.
+     *  @param  end     The index number of the next to the last item.
      */
-    friend bool operator==(const Element& x, const Element& y)
+    ItemArray(uint8_t* items, size_t length, size_t bytes_per_item, size_t begin, size_t end) :
+        m_managed(false), m_begin(begin), m_end(end), m_length(length),
+        m_bytes_per_item(bytes_per_item), m_items(items)
     {
-        return std::memcmp(
-            x.reader->ptr(),
-            y.reader->ptr(),
-            x.reader->bytes_per_bucket()
-            ) == 0;
+    }
+
+    /**
+     * Constructs by copying the array of another ItemArray instance.
+     *  @param  src     Another ItemArray instance.
+     */
+    ItemArray(const ItemArray& src) :
+        m_managed(true), m_begin(0), m_end(src.end - src.begin), m_length(src.end - src.begin),
+        m_bytes_per_item(src.m_bytes_per_item)
+    {
+        size_t size = m_bytes_per_item * m_length;
+        m_items = new uint8_t[size];
+        std::memcpy(m_items, &src.m_items[src.m_bytes_per_item * src.begin], size);
+    }
+
+    virtual ~ItemArray()
+    {
+        if (m_managed && m_items != nullptr) {
+            delete[] m_items;
+        }
+        m_items = nullptr;
+        m_begin = 0;
+        m_end = 0;
+    }
+
+    Item& operator[](size_t i)
+    {
+        return *reinterpret_cast<Item*>(m_items + m_bytes_per_item * (m_begin + i));
+    }
+
+    const Item& operator[](size_t i) const
+    {
+        return *reinterpret_cast<const Item*>(m_items + m_bytes_per_item * (m_begin + i));
+    }
+
+    size_t length() const
+    {
+        return m_length;
+    }
+
+    size_t bytes_per_item() const
+    {
+        return m_bytes_per_item;
+    }
+
+    void set_number_of_items(size_t n)
+    {
+        m_end = m_begin + n;
     }
 };
 
+void merge(ItemArray A[], size_t left, size_t mid, size_t right)
+{
+    ItemArray L(A[left]);
+    ItemArray R(A[mid]);
+
+    ItemArray& M = A[left];
+    size_t i = 0, j = 0, k = 0;
+    size_t bytes_per_bucket = L.bytes_per_item();
+    size_t bytes_per_item = bytes_per_bucket - sizeof(uint64_t);
+    while (i < L.length() && j < R.length()) {
+        int cmp = std::memcmp(L[i].bucket, R[j].bucket, bytes_per_bucket);
+        if (cmp < 0) {
+            std::memcpy(&M[k++], &L[i++], bytes_per_item);
+        } else if (cmp > 0) {
+            std::memcpy(&M[k++], &R[j++], bytes_per_item);
+        } else {
+            std::memcpy(&M[k++], &L[i++], bytes_per_item);
+            ++j;
+        }
+    }
+
+    while (i < L.length()) {
+        std::memcpy(&M[k++], &L[i++], bytes_per_item);
+    }
+    while (j < R.length()) {
+        std::memcpy(&M[k++], &R[j++], bytes_per_item);
+    }
+
+    M.set_number_of_items(k);
+}
+
+void unique(ItemArray A[], size_t left, size_t right)
+{
+    if (left + 1 < right) {
+        size_t mid = (left + right) / 2;
+        unique(A, left, mid);
+        unique(A, mid, right);
+        merge(A, left, mid, right);
+    }
+}
 
 int merge_index(
     spdlog::logger& logger,
     const std::vector<std::string>& sources,
     const std::string& output,
-    size_t bucket_number
-)
+    int start,
+    int end
+    )
 {
-    const size_t K = sources.size();
-    size_t bytes_per_bucket = 0;
-    size_t num_total_items = 0;
-    size_t num_active_items = 0;
+    const size_t G = sources.size();
 
-    // Open index files through K reader objects.
-    IndexReader readers[K];
-    for (size_t k = 0; k < K; ++k) {
-        // Open an index file.
-        logger.trace("Open an index file: {}", sources[k]);
-        std::string msg = readers[k].open(sources[k], bucket_number);
-        if (!msg.empty()) {
-            logger.critical(msg);
-            return 1;
-        }
-
-        // Retrieve parameters from the header of the index file.
-        if (k == 0) {
-            bytes_per_bucket = readers[k].m_bytes_per_bucket;
-            num_total_items = readers[k].m_num_total_items;
-            num_active_items = readers[k].m_num_active_items;
-            logger.info("bytes_per_bucket: {}", bytes_per_bucket);
-            logger.info("num_total_items: {}", num_total_items);
-            logger.info("num_active_items: {}", num_active_items);
-        } else {
-            if (bytes_per_bucket != readers[k].m_bytes_per_bucket) {
-                logger.critical("Inconsistent parameter, bytes_per_bucket: {}", readers[k].m_bytes_per_bucket);
-                return 2;
+    for (int bn = start; bn < end; bn++) {
+        for (size_t split = SPLIT_BEGIN; split < SPLIT_END; ++split) {
+            size_t num_items[G];
+            size_t num_active_items = 0;
+            size_t num_total_items = 0;
+            size_t bytes_per_bucket = 0;
+            for (size_t g = 0; g < G; ++g) {
+                IndexReader reader;
+                reader.open(sources[g], bn, (uint8_t)split, true);
+                num_items[g] = reader.m_num_active_items;
+                num_active_items += reader.m_num_active_items;
+                num_total_items += reader.m_num_total_items;
+                if (g == 0) {
+                    bytes_per_bucket = reader.m_bytes_per_bucket;
+                } else {
+                    if (bytes_per_bucket != reader.m_bytes_per_bucket) {
+                        // Inconsistent bytes per bucket across groups.
+                    }
+                }
             }
-            num_total_items += readers[k].m_num_total_items;
-            num_active_items += readers[k].m_num_active_items;
+
+            const size_t bytes_per_item = sizeof(uint64_t) + bytes_per_bucket;
+            uint8_t *buffer = uint8_t[bytes_per_item];
+            ItemArray indices[G];
+            
         }
-        if (readers[k].m_bucket_number != bucket_number) {
-            logger.critical("Inconsistent bucket number: {}", readers[k].m_bucket_number);
-            return 2;
-        }
-    }
-
-    // Writer for the index that merges the source indices.
-    IndexWriter writer;
-    if (!output.empty()) {
-        std::string msg = writer.open(
-            output,
-            bucket_number,
-            bytes_per_bucket,
-            num_total_items,
-            num_active_items);
-        if (!msg.empty()) {
-            logger.critical(msg);
-            return 3;
-        }
-    }
-
-    // The priority queue to select elements in ascending order.
-    // Note that we need to specify std::greater for ascending order.
-    std::priority_queue<Element, std::vector<Element>, std::greater<Element> > pq;
-
-    // Frontier elements from source indices.
-    Element items[sources.size()];
-    for (size_t k = 0; k < K; ++k) {
-        // Associate the k-th element with the k-th reader.
-        items[k].reader = &readers[k];
-    }
-
-    // Push the first element of each index to the priority queue.
-    for (size_t k = 0; k < K; ++k) {
-        if (items[k].reader->next()) {
-            pq.push(items[k]);
-        }
-    }
-
-    // Merge the source indices.
-    num_active_items = 0;
-    while (!pq.empty()) {
-        // Pop the minimum element.
-        auto top = pq.top();
-        pq.pop();
-        ++num_active_items;
-
-        // Write the element to the output index if necessary.
-        if (!output.empty()) {
-            writer.write_raw(top.reader->ptr());
-        }
-
-        std::cout
-            << "+ "
-            << top.reader->bucket() << " "
-            << top.reader->group() << " "
-            << top.reader->item() << std::endl;
-
-        // Skip elements with the identical bucket to the minimum element.
-        while (!pq.empty() && pq.top() == top) {
-            // Pop the element (this is a duplicate of the minimum element)
-            auto next = pq.top();
-            pq.pop();
-
-            std::cout
-                << "+ "
-                << next.reader->bucket() << " "
-                << next.reader->group() << " "
-                << next.reader->item() << std::endl;
-
-            // Read the next element from the index whose frontier element has
-            // just been recognized as a duplicate.
-            if (next.reader->next()) {
-                pq.push(next);
-            }
-        }
-
-        // Read the next element from the index whose frontier element was the
-        // minimum element (non-duplicate).
-        if (top.reader->next()) {
-            pq.push(top);
-        }
-    }
-
-    if (!output.empty()) {
-        writer.update_num_active_items(num_active_items);
-    }
-
-    return 0;
-}
-
-int merge(
-    spdlog::logger& logger,
-    const std::vector<std::string>& sources,
-    const std::string& output,
-    size_t begin,
-    size_t end
-)
-{
-    for (size_t bn = begin; bn < end; ++bn) {
-        merge_index(logger, sources, output, bn);
     }
     return 0;
 }
@@ -286,14 +265,19 @@ int main(int argc, char *argv[])
 
     // Initialize the console logger.
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
-    console_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-console")));
+    auto console_log_level = spdlog::level::from_str(program.get<std::string>("log-level-console"));
+    console_sink->set_level(console_log_level);
+
+    // Initialize the file logger.
     auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(logfile, true);
-    file_sink->set_level(spdlog::level::from_str(program.get<std::string>("log-level-file")));
+    auto file_log_level = spdlog::level::from_str(program.get<std::string>("log-level-file"));
+    file_sink->set_level(file_log_level);
+
+    // Create the logger that integrates console and file loggers.
     spdlog::logger logger("doubri-merge", {console_sink, file_sink});
+    logger.flush_on(file_log_level);
 
     // Perform index merging.
-    merge(logger, sources, output, begin, end);
-
-    return 0;
+    return merge_index(logger, sources, output, begin, end);
 }
 

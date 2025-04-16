@@ -54,7 +54,7 @@ public:
     /// Index number of the next to the last item.
     size_t m_end{0};
     /// Number of items in the array.
-    size_t m_length{0}:
+    size_t m_length{0};
     /// Number of bytes per item.
     size_t m_bytes_per_item{0};
     /// The item array.
@@ -82,17 +82,27 @@ public:
     {
     }
 
-    /**
-     * Constructs by copying the array of another ItemArray instance.
-     *  @param  src     Another ItemArray instance.
-     */
-    ItemArray(const ItemArray& src) :
-        m_managed(true), m_begin(0), m_end(src.end - src.begin), m_length(src.end - src.begin),
-        m_bytes_per_item(src.m_bytes_per_item)
+    ItemArray(const ItemArray& src)
     {
+        m_managed = true;
+        m_begin = 0;
+        m_end = src.m_end - src.m_begin;
+        m_length = m_end;
+        m_bytes_per_item = src.m_bytes_per_item;
+
         size_t size = m_bytes_per_item * m_length;
         m_items = new uint8_t[size];
-        std::memcpy(m_items, &src.m_items[src.m_bytes_per_item * src.begin], size);
+        std::memcpy(m_items, &src.m_items[src.m_bytes_per_item * src.m_begin], size);
+    }
+
+    void set(uint8_t* items, size_t length, size_t bytes_per_item, size_t begin, size_t end)
+    {
+        m_managed = false;
+        m_begin = begin;
+        m_end = end;
+        m_length = length;
+        m_bytes_per_item = bytes_per_item;
+        m_items = items;
     }
 
     virtual ~ItemArray()
@@ -133,8 +143,8 @@ public:
 
 void merge(ItemArray A[], size_t left, size_t mid, size_t right)
 {
-    ItemArray L(A[left]);
-    ItemArray R(A[mid]);
+    ItemArray L = A[left];
+    ItemArray R = A[mid];
 
     ItemArray& M = A[left];
     size_t i = 0, j = 0, k = 0;
@@ -182,31 +192,58 @@ int merge_index(
 {
     const size_t G = sources.size();
 
+    logger.info("Merge indices");
+    logger.info("begin: {}", start);
+    logger.info("end: {}", end);
+    for (size_t g = 0; g < G; ++g) {
+        logger.info("sources[{}]: {}", g, sources[g]);
+    }
+
     for (int bn = start; bn < end; bn++) {
+        spdlog::stopwatch sw_bucket;
+
         for (size_t split = SPLIT_BEGIN; split < SPLIT_END; ++split) {
-            size_t num_items[G];
-            size_t num_active_items = 0;
-            size_t num_total_items = 0;
+            size_t begins[G];
+            size_t num_active_items = 0, num_total_items = 0;
             size_t bytes_per_bucket = 0;
             for (size_t g = 0; g < G; ++g) {
                 IndexReader reader;
                 reader.open(sources[g], bn, (uint8_t)split, true);
-                num_items[g] = reader.m_num_active_items;
+
+                logger.info("[#{}:{:02x}] {} / {} items", bn, split, reader.m_num_active_items, reader.m_num_total_items);
+
+                begins[g] = num_active_items;
                 num_active_items += reader.m_num_active_items;
                 num_total_items += reader.m_num_total_items;
+
+                // Check the consistency of bytes_per_item
                 if (g == 0) {
                     bytes_per_bucket = reader.m_bytes_per_bucket;
                 } else {
                     if (bytes_per_bucket != reader.m_bytes_per_bucket) {
-                        // Inconsistent bytes per bucket across groups.
+                        logger.error("The number of bytes per bucket {} is inconsistent with {}: {}", reader.m_bytes_per_bucket, bytes_per_bucket, sources[g]);
+                        return 1;
                     }
                 }
             }
 
-            const size_t bytes_per_item = sizeof(uint64_t) + bytes_per_bucket;
-            uint8_t *buffer = uint8_t[bytes_per_item];
             ItemArray indices[G];
-            
+            const size_t bytes_per_item = sizeof(uint64_t) + bytes_per_bucket;
+            uint8_t *buffer = new uint8_t[bytes_per_item * num_active_items];
+            for (size_t g = 0; g < G; ++g) {
+                IndexReader reader;
+                reader.open(sources[g], bn, (uint8_t)split, true);
+                reader.read_all(buffer + bytes_per_item * begins[g]);
+                indices[g].set(
+                    buffer,
+                    num_active_items,
+                    bytes_per_item,
+                    begins[g],
+                    begins[g] + reader.m_num_active_items
+                    );
+            }
+
+            unique(indices, 0, G);
         }
     }
     return 0;

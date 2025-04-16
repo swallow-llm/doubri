@@ -304,6 +304,15 @@ public:
         return !m_ifs.eof() && !m_ifs.fail();
     }
 
+    bool read_all(uint8_t *buffer)
+    {
+        m_ifs.read(
+            reinterpret_cast<std::ifstream::char_type*>(buffer),
+            m_bytes_per_item * m_num_active_items
+            );
+        return !m_ifs.eof() && !m_ifs.fail();
+    }
+
     /**
      * Get the pointer to the byte stream of the current item.
      *  @return     The pointer to the byte stream of the current item.
@@ -362,6 +371,8 @@ public:
         }
         return v;
     }
+
+
 
 protected:
     template <typename StreamT, typename ValueT>

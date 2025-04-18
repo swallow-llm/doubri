@@ -36,7 +36,7 @@ SOFTWARE.
 #include "index.hpp"
 #include "flag.hpp"
 
-#define DEBUG_MERGE    1
+//#define DEBUG_MERGE    1
 
 class ItemArray {
 public:

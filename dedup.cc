@@ -22,7 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#define DEBUG_DUPLICATES    1
+//#define TRIM_INDEX          1
+//#define DEBUG_DUPLICATES    1
 //#define DEBUG_SORT          1
 
 #include <algorithm>
@@ -152,6 +153,12 @@ struct Element {
         return s_buffer + i * s_bytes_per_bucket;
     }
 
+    /**
+     * Get the split of the bucket.
+     *  Currently, we split buckets based on the last byte.
+     *
+     *  @return The split.
+     */
     const uint8_t split() const
     {
         const uint8_t *p = this->ptr();
@@ -382,8 +389,8 @@ public:
         // Split the index into 256 files. Because reading and writing
         // a large file is slow, we split the index into 256 files so that
         // we can read, merge, and write individual index files in parallel.
-        //tbb::parallel_for((size_t)SPLIT_BEGIN, (size_t)SPLIT_END, [&](size_t split) {
-        for (size_t split = SPLIT_BEGIN; split < SPLIT_END; ++split) {
+        tbb::parallel_for((size_t)SPLIT_BEGIN, (size_t)SPLIT_END, [&](size_t split) {
+        //for (size_t split = SPLIT_BEGIN; split < SPLIT_END; ++split) {
 
             // Open an index file (untrimmed).
             IndexWriter writer;            
@@ -394,7 +401,11 @@ public:
                 bytes_per_bucket,
                 0, // We will find and update this number later.
                 0, // We will find and update this number later.
+#ifdef  TRIM_INDEX
                 false
+#else
+                true
+#endif/*TRIM_INDEX*/
                 );
             if (!msg.empty()) {
                 m_logger.critical(msg);
@@ -465,7 +476,7 @@ public:
             // Update the header of the index with item numbers.
 	        writer.update_num_active_items(num_active_items);
             writer.update_num_total_items(num_total_items);
-	    }
+	    });
     	m_logger.info("[#{}] Completed writing the index in {:.3f} seconds", bucket_number, sw_index);
 	
         // Find the numbers of active and detected items.
@@ -510,11 +521,13 @@ public:
             deduplicate_bucket(basename, bn, reverse);
         }
 
+#ifdef  TRIM_INDEX
         // Trimming inactive items across different bucket numbers.
         for (size_t bn = m_begin; bn < m_end; ++bn) {
-            trim_bucket_array(basename, bn);
+            //trim_bucket_array(basename, bn);
         }
-        
+#endif/*TRIM_INDEX*/
+
         size_t num_active_after = std::count(m_flags.begin(), m_flags.end(), ' ');
         double active_ratio_before = 0 < m_num_items ? num_active_before / (double)m_num_items : 0.;
         double active_ratio_after = 0 < m_num_items ? num_active_after / (double)m_num_items : 0.;

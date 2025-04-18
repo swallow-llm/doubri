@@ -292,7 +292,7 @@ public:
     }
 
     /**
-     * Read the next element.
+     * Read the next item.
      *  @return     \c true if successful, \c false otherwise.
      */
     bool next()
@@ -304,6 +304,11 @@ public:
         return !m_ifs.eof() && !m_ifs.fail();
     }
 
+    /**
+     * Read the all item.
+     *  @param  buffer  The pointer to the buffer where all items are read.
+     *  @return         \c true if successful, \c false otherwise.
+     */
     bool read_all(uint8_t *buffer)
     {
         m_ifs.read(
@@ -332,16 +337,18 @@ public:
     }
 
     /**
-     * Obtain a string representation of the bucket.
-     *  @return     The string representation of the current bucket.
+     * Obtain a group number of the item.
+     *  @param  ptr The pointer to the item.
+     *  @return     The group number.
      */
-    std::string bucket() const
+    static size_t group_number(const uint8_t *ptr)
     {
-        std::stringstream ss;
-        for (size_t i = sizeof(uint64_t); i < m_bytes_per_item; ++i) {
-            ss << std::hex << std::setfill('0') << std::setw(2) << (int)m_bs[i];
+        size_t v = 0;
+        for (size_t i = 0; i < 2; ++i) {
+            v <<= 8;
+            v |= ptr[i];
         }
-        return ss.str();
+        return v;
     }
 
     /**
@@ -350,10 +357,20 @@ public:
      */
     size_t gnum() const
     {
+        return group_number(this->ptr());
+    }
+
+    /**
+     * Obtain an item number of the current element.
+     *  @param  ptr The pointer to the item.
+     *  @return     The item number.
+     */
+    static size_t item_number(const uint8_t *ptr)
+    {
         size_t v = 0;
-        for (size_t i = 0; i < 2; ++i) {
+        for (size_t i = 2; i < 8; ++i) {
             v <<= 8;
-            v |= m_bs[i];
+            v |= ptr[i];
         }
         return v;
     }
@@ -364,15 +381,36 @@ public:
      */
     size_t inum() const
     {
-        size_t v = 0;
-        for (size_t i = 2; i < 8; ++i) {
-            v <<= 8;
-            v |= m_bs[i];
-        }
-        return v;
+        return item_number(this->ptr());
     }
 
+    /**
+     * Obtain a string representation of the bucket.
+     *  @param  ptr     The pointer to the item.
+     *  @return     The string representation of the ID.
+     */
+    static std::string repr_id(const uint8_t *begin)
+    {
+        std::stringstream ss;
+        ss << group_number(begin) << ':' << item_number(begin) << ' ';
+        return ss.str();
+    }
 
+    /**
+     * Obtain a string representation of the bucket.
+     *  @param  begin   The pointer to the item.
+     *  @param  end     The pointer to the next item.
+     *  @return     The string representation of the current bucket.
+     */
+    static std::string repr(const uint8_t *begin, const uint8_t *end)
+    {
+        std::stringstream ss;
+        ss << repr_id(begin);
+        for (const uint8_t *p = begin + sizeof(uint64_t); p < end; ++p) {
+            ss << std::hex << std::setfill('0') << std::setw(2) << (int)*p;
+        }
+        return ss.str();
+    }
 
 protected:
     template <typename StreamT, typename ValueT>

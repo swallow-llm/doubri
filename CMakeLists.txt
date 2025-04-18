@@ -21,6 +21,7 @@ target_compile_options(doubri-similarity PUBLIC)
 # OneTBB
 find_package(TBB REQUIRED)
 target_link_libraries(doubri-dedup TBB::tbb)
+target_link_libraries(doubri-similarity TBB::tbb)
 
 #add_executable(doubri-apply flag_apply.cc)
 #target_compile_options(doubri-apply PUBLIC -O3)

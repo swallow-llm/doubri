@@ -36,6 +36,8 @@ SOFTWARE.
 #include <utf8.h>
 #include <nlohmann/json.hpp>
 #include <argparse/argparse.hpp>
+#include <tbb/parallel_for_each.h>
+#include <tbb/mutex.h>
 
 #include "common.h"
 
@@ -92,6 +94,7 @@ int main(int argc, char *argv[])
     std::istream& is = std::cin;
     std::ostream& os = std::cout;
     std::ostream& es = std::cerr;
+    tbb::mutex mutex;
 
     // The command-line parser.
     argparse::ArgumentParser program("doubri-similarity", __DOUBRI_VERSION__);
@@ -148,7 +151,7 @@ int main(int argc, char *argv[])
         if (d.contains(field_id) && d.contains(field_text)) {
             std::string text = d[field_text];
             if (utf8::distance(text.begin(), text.end()) < n) {
-                std::fill_n(std::inserter(text, text.end()), n, '_');
+                text = std::string(n, '_');
             }
             Item item(d[field_id], text);
             ngram(item._text, item._ngrams, n);
@@ -156,21 +159,25 @@ int main(int argc, char *argv[])
         }
     }
 
-    for (auto itx = items.begin(); itx != items.end(); ++itx) {
-        for (auto ity = itx+1; ity != items.end(); ++ity) {
+    tbb::parallel_for((size_t)0, (size_t)items.size(), [&](size_t i) {
+        for (size_t j = i+1; j < items.size(); ++j) {
+            const auto x = items[i];
+            const auto y = items[j];
+
             size_t m = 0;
-            for (auto it = itx->_ngrams.begin(); it != itx->_ngrams.end(); ++it) {
-                if (ity->_ngrams.find(*it) != ity->_ngrams.end()) {
+            for (auto it = x._ngrams.begin(); it != x._ngrams.end(); ++it) {
+                if (y._ngrams.find(*it) != y._ngrams.end()) {
                     ++m;
                 }
             }
-            size_t n = itx->_ngrams.size() + ity->_ngrams.size() - m;
+            size_t n = x._ngrams.size() + y._ngrams.size() - m;
             double sim = m / (double)n;
-            if (0.5 <= sim) {
-                os << sim << " " << itx->_id << " " << ity->_id << std::endl;
+            if (threshold <= sim) {
+                tbb::mutex::scoped_lock lock(mutex);
+                os << sim << " " << x._id << " " << y._id << std::endl;
             }
         }
-    }
+    });
 
     return 0;
 }

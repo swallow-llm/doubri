@@ -176,13 +176,28 @@ int main(int argc, char *argv[])
             break;
         }
 
-        // Parse the line in JSON.
-        auto d = json::parse(line);
-
-        // Obtain the text.
+        // The text for which we calculate MinHash values.
         std::string text;
-        if (d.contains(field)) {
-            text = d[field];
+
+        try {
+            // Parse the line in JSON.
+            auto d = json::parse(line);
+
+            // Extract a text from the text field.
+            if (d.contains(field)) {
+                text = d[field];
+            } else {
+                es << "ERROR (at line " << num_items+1 << "): no '" << field << "' field." << std::endl;
+                return 1;
+            }
+
+        } catch (const json::parse_error& e) {
+            es << "ERROR (at line " << num_items+1 << "): " << e.what() << std::endl;
+            es << line << std::endl;
+            // This exception is usually caused by an ill-formed UTF-8 byte
+            // sequence. We resume the process by leaving the document empty.
+            // This treatment ensures that the number of items in the hash
+            // file is equal to that of lines of the source JSONL stream.
         }
 
         // Obtain features (n-grams) from the text.
@@ -190,6 +205,9 @@ int main(int argc, char *argv[])
         ngram(text, features, n);
 
         // Initialize an array to store MinHash values with the max value.
+        // This ensures that a text less than n characters will have the
+        // same bucket, FF FF ... FF, because this code does not step in
+        // the for loop with empty features.
         hashvalue_t mins[H];
         std::fill_n(mins, H, max_hashvalue);
 

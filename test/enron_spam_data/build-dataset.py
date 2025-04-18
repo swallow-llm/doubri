@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 import os
+import math
 
 G = 4
 S = 100
@@ -16,13 +17,16 @@ for index, row in df.iterrows():
     ))
 
 datasets = [[] for g in range(G)]
-for i, d in enumerate(D):
-    g = int(i / (len(D) / G))
-    datasets[g].append(d)
+m = math.ceil(len(D) / G)
+for i in range(0, len(D), m):
+    g = i // m
+    datasets[g] = D[i:min(i+m, len(D))]
+    print(i, i+m, len(datasets[g]))
 
 for g, dataset in enumerate(datasets):
-    for i in range(len(dataset) // S):
+    for i in range(0, len(dataset), S):
         os.makedirs(f'data/{g:02d}', exist_ok=True)
-        with open(f'data/{g:02d}/{g:02d}-{i:05d}.jsonl', 'w') as fo:
-            for d in dataset[i*S:min((i+1)*S, len(dataset))]:
+        with open(f'data/{g:02d}/{g:02d}-{i//S:05d}.jsonl', 'w') as fo:
+            print(i, i+S)
+            for d in dataset[i:min(i+S, len(dataset))]:
                 print(json.dumps(d), file=fo)

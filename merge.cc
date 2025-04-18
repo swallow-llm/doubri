@@ -39,10 +39,8 @@ SOFTWARE.
  * An item in an index (a list of sorted buckets with their IDs).
  */
 struct Item {
-    /// Item ID.
-    uint64_t id;
-    /// Bucket byte-stream.
-    uint8_t bucket[1];  // Flexible array member (variable size).
+    /// The byte stream.
+    uint8_t ptr[1];  // Flexible array member (variable size).
 };
 
 class ItemArray {
@@ -141,15 +139,15 @@ public:
     }
 };
 
-void merge(ItemArray A[], size_t left, size_t mid, size_t right)
+void merge(ItemArray A[], size_t left, size_t mid, size_t right, spdlog::logger& logger)
 {
     ItemArray L = A[left];
     ItemArray R = A[mid];
 
     ItemArray& M = A[left];
     size_t i = 0, j = 0, k = 0;
-    size_t bytes_per_bucket = L.bytes_per_item();
-    size_t bytes_per_item = bytes_per_bucket - sizeof(uint64_t);
+    size_t bytes_per_item = L.bytes_per_item();
+    size_t bytes_per_bucket = bytes_per_item - sizeof(uint64_t);
     while (i < L.length() && j < R.length()) {
         int cmp = std::memcmp(L[i].bucket, R[j].bucket, bytes_per_bucket);
         if (cmp < 0) {
@@ -157,6 +155,7 @@ void merge(ItemArray A[], size_t left, size_t mid, size_t right)
         } else if (cmp > 0) {
             std::memcpy(&M[k++], &R[j++], bytes_per_item);
         } else {
+            logger.info("Merge: {} {}", id_to_string(L[i].id), id_to_string(R[j].id));
             std::memcpy(&M[k++], &L[i++], bytes_per_item);
             ++j;
         }
@@ -172,13 +171,13 @@ void merge(ItemArray A[], size_t left, size_t mid, size_t right)
     M.set_number_of_items(k);
 }
 
-void unique(ItemArray A[], size_t left, size_t right)
+void unique(ItemArray A[], size_t left, size_t right, spdlog::logger& logger)
 {
     if (left + 1 < right) {
         size_t mid = (left + right) / 2;
-        unique(A, left, mid);
-        unique(A, mid, right);
-        merge(A, left, mid, right);
+        unique(A, left, mid, logger);
+        unique(A, mid, right, logger);
+        merge(A, left, mid, right, logger);
     }
 }
 
@@ -210,8 +209,6 @@ int merge_index(
                 IndexReader reader;
                 reader.open(sources[g], bn, (uint8_t)split, true);
 
-                logger.info("[#{}:{:02x}] {} / {} items", bn, split, reader.m_num_active_items, reader.m_num_total_items);
-
                 begins[g] = num_active_items;
                 num_active_items += reader.m_num_active_items;
                 num_total_items += reader.m_num_total_items;
@@ -226,6 +223,8 @@ int merge_index(
                     }
                 }
             }
+
+            logger.info("[#{}:{:02x}] {} / {} items", bn, split, num_active_items, num_total_items);
 
             ItemArray indices[G];
             const size_t bytes_per_item = sizeof(uint64_t) + bytes_per_bucket;
@@ -243,7 +242,40 @@ int merge_index(
                     );
             }
 
-            unique(indices, 0, G);
+/*
+            if (split == 0xFF) {
+                for (size_t i = 0; i < num_active_items; ++i) {
+                    uint8_t *begin = buffer + i * bytes_per_item;
+                    uint8_t *end = buffer + (i+1) * bytes_per_item;
+                    std::cout << repr_item(begin, end) << std::endl;
+                }
+            }
+*/
+
+            for (size_t i = 0; i < num_active_items; ++i) {
+                uint8_t *begin = buffer + i * bytes_per_item;
+                if (id_to_string(*reinterpret_cast<uint64_t*>(begin)) == "0:0") {
+                    for (size_t j = 0; j < num_active_items; ++j) {
+                        uint8_t *begin = buffer + j * bytes_per_item;
+                        uint8_t *end = buffer + (j+1) * bytes_per_item;
+                        std::cout << repr_item(begin, end) << std::endl;
+                    }
+                }
+            }
+
+
+
+            unique(indices, 0, G, logger);
+
+/*
+            if (split == 0xFF) {
+                for (size_t i = indices[0].m_begin; i < indices[0].m_end; ++i) {
+                    uint8_t *begin = indices[0].m_items + i * indices[0].m_bytes_per_item;
+                    uint8_t *end = indices[0].m_items + (i+1) * indices[0].m_bytes_per_item;
+                    std::cout << repr_item(begin, end) << std::endl;                    
+                }
+            }
+*/
         }
     }
     return 0;

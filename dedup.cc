@@ -22,7 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-//#define DEBUG_DUPLICATES    1
+#define DEBUG_DUPLICATES    1
 //#define DEBUG_SORT          1
 
 #include <algorithm>
@@ -113,7 +113,7 @@ struct Element {
     friend bool operator>(const Element& x, const Element& y)
     {
         auto order = std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket);
-        return order == 0 ? (y.i < x.i) : (order < 0);
+        return order == 0 ? (x.i > y.i) : (order > 0);
     }
 
     /**
@@ -360,9 +360,9 @@ public:
         spdlog::stopwatch sw_sort;
         m_logger.info("[#{}] Sort buckets", bucket_number);
         if (reverse) {
-            tbb::parallel_sort(m_items.begin(), m_items.end(), std::less<Element>());
-        } else {
             tbb::parallel_sort(m_items.begin(), m_items.end(), std::greater<Element>());
+        } else {
+            tbb::parallel_sort(m_items.begin(), m_items.end(), std::less<Element>());
         }
         m_logger.info("[#{}] Completed sorting in {:.3f} seconds", bucket_number, sw_sort);
 
@@ -382,7 +382,8 @@ public:
         // Split the index into 256 files. Because reading and writing
         // a large file is slow, we split the index into 256 files so that
         // we can read, merge, and write individual index files in parallel.
-        tbb::parallel_for((size_t)SPLIT_BEGIN, (size_t)SPLIT_END, [&](size_t split) {
+        //tbb::parallel_for((size_t)SPLIT_BEGIN, (size_t)SPLIT_END, [&](size_t split) {
+        for (size_t split = SPLIT_BEGIN; split < SPLIT_END; ++split) {
 
             // Open an index file (untrimmed).
             IndexWriter writer;            
@@ -408,6 +409,14 @@ public:
                     ++cur;
                     continue;
                 }
+
+                if (cur->i == 1937) {
+                    auto tmp = cur;
+                    for (size_t j = 0; j < 10; ++j) {
+                        std::cout << tmp->repr() << std::endl;
+                        ++tmp;
+                    }
+                }
 	    
                 // Find the next item that has a different bucket from the current one.
                 auto next = cur + 1;
@@ -416,9 +425,12 @@ public:
                 }
 
 #ifdef  DEBUG_DUPLICATES
+                std::string duplicates;
                 bool has_duplicates = (next != cur + 1);
                 if (has_duplicates) {
-	                std::cout << "Duplicate: " << cur->i;
+//                    duplicates += std::to_string(m_group);
+                    duplicates += "0:";
+                    duplicates += std::to_string(8429 * m_group + cur->i);
                 }
 #endif/*DEBUG_DUPLICATES*/
 
@@ -435,13 +447,16 @@ public:
 	                m_flags[cur->i] = 'd';
                     ++num_total_items;
 #ifdef  DEBUG_DUPLICATES
-	                std::cout << " " << cur->i;
+                    duplicates += ' ';
+//                    duplicates += std::to_string(m_group);
+                    duplicates += "0:";
+                    duplicates += std::to_string(8429 * m_group + cur->i);
 #endif/*DEBUG_DUPLICATES*/
                 }
 
 #ifdef  DEBUG_DUPLICATES
-                if (has_duplicates) {
-	                std::cout << std::endl;
+                if (!duplicates.empty()) {
+                    m_logger.info("[#{}] Duplicate(s): {}", bucket_number, duplicates);
                 }
 #endif/*DEBUG_DUPLICATES*/
 	        }
@@ -450,7 +465,7 @@ public:
             // Update the header of the index with item numbers.
 	        writer.update_num_active_items(num_active_items);
             writer.update_num_total_items(num_total_items);
-	    });
+	    }
     	m_logger.info("[#{}] Completed writing the index in {:.3f} seconds", bucket_number, sw_index);
 	
         // Find the numbers of active and detected items.

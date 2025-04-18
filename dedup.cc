@@ -649,11 +649,6 @@ int main(int argc, char *argv[])
         .help("keep older duplicated items (newer items, by default)")
         .default_value(false)
         .flag();
-    program.add_argument("-g", "--group")
-        .help("specifies a group number (in [0, 65535]) of the items")
-        .scan<'d', uint16_t>()
-        .nargs(1)
-        .required();
     program.add_argument("-l", "--log-level-console")
         .help("sets a log level for console")
         .default_value(std::string{"warning"})
@@ -682,7 +677,6 @@ int main(int argc, char *argv[])
     // Retrieve parameters.
     const auto basename = program.get<std::string>("basename");
     const auto reverse = program.get<bool>("reverse");
-    const auto group = program.get<uint16_t>("group");
     const std::string flagfile = basename + std::string(".dup");
     const std::string logfile = basename + std::string(".log");
     const std::string srcfile = basename + std::string(".src");
@@ -702,7 +696,7 @@ int main(int argc, char *argv[])
     logger.flush_on(file_log_level);
 
     // The deduplication object.
-    MinHashLSH dedup(logger, group);
+    MinHashLSH dedup(logger, 0);
 
     // One MinHash file per line.
     for (;;) {

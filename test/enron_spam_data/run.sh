@@ -22,13 +22,13 @@ done
 
 # Deduplicate all text at once.
 mkdir -p $WORK/dedup/all
-find $WORK/minhash/ -name '*.mh' | sort | ../../build/doubri-dedup -g 0 -l info -L info $WORK/dedup/all/dedup
+find $WORK/minhash/ -name '*.mh' | sort | ../../build/doubri-dedup -l info -L info $WORK/dedup/all/dedup
 cat $WORK/dedup/all/dedup.dup | ./evaluate-flag.py enron_spam_data-sim.txt > result-all-flag.txt
 
 # Deduplicate text for each group.
 for DIR in "${DIRS[@]}"; do
     mkdir -p $WORK/dedup/$DIR
-    find $WORK/minhash/$DIR -name '*.mh' | sort | ../../build/doubri-dedup -g $DIR -l info -L info $WORK/dedup/$DIR/dedup
+    find $WORK/minhash/$DIR -name '*.mh' | sort | ../../build/doubri-dedup -l info -L info $WORK/dedup/$DIR/dedup
 done
 
 # Merge indices

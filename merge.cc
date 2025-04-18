@@ -339,6 +339,9 @@ int merge_index(
             // Merge item arrays.
             size_t num_deleted = unique(indices, 0, G, flags, logger);
             logger.info("[#{}:{:02x}] Completed merging in {:.3f} seconds", bn, split, sw);
+
+            // Free the big array.
+            delete[] buffer;
         }
 
         // Count the number of active items.

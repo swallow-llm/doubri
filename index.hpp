@@ -82,7 +82,7 @@ public:
     std::string open(
         const std::string& basename,
         size_t bucket_number = 0,
-	uint8_t split = 0,
+	    uint8_t split = 0,
         size_t bytes_per_bucket = 0,
         size_t num_total_items = 0,
         size_t num_active_items = 0,
@@ -184,6 +184,13 @@ public:
     {
         m_ofs.write(reinterpret_cast<const char*>(buffer), sizeof(uint64_t) + m_bytes_per_bucket);
         return !m_ofs.fail();
+    }
+
+    static void set_group(uint8_t *ptr, size_t g)
+    {
+        uint16_t v = (uint16_t)g;
+        ptr[0] = (v & 0xFF00) >> 8;
+        ptr[1] = (v & 0x00FF);
     }
 
 protected:
@@ -392,7 +399,7 @@ public:
     static std::string repr_id(const uint8_t *begin)
     {
         std::stringstream ss;
-        ss << group_number(begin) << ':' << item_number(begin) << ' ';
+        ss << group_number(begin) << ':' << item_number(begin);
         return ss.str();
     }
 
@@ -405,7 +412,7 @@ public:
     static std::string repr(const uint8_t *begin, const uint8_t *end)
     {
         std::stringstream ss;
-        ss << repr_id(begin);
+        ss << repr_id(begin) << ' ';
         for (const uint8_t *p = begin + sizeof(uint64_t); p < end; ++p) {
             ss << std::hex << std::setfill('0') << std::setw(2) << (int)*p;
         }

@@ -34,14 +34,9 @@ SOFTWARE.
 
 #include "common.h"
 #include "index.hpp"
+#include "flag.hpp"
 
-/**
- * An item in an index (a list of sorted buckets with their IDs).
- */
-struct Item {
-    /// The byte stream.
-    uint8_t ptr[1];  // Flexible array member (variable size).
-};
+#define DEBUG_MERGE    1
 
 class ItemArray {
 public:
@@ -74,12 +69,15 @@ public:
      *  @param  begin   The index number of the first item.
      *  @param  end     The index number of the next to the last item.
      */
-    ItemArray(uint8_t* items, size_t length, size_t bytes_per_item, size_t begin, size_t end) :
-        m_managed(false), m_begin(begin), m_end(end), m_length(length),
-        m_bytes_per_item(bytes_per_item), m_items(items)
+    ItemArray(uint8_t* items, size_t length, size_t bytes_per_item, size_t begin, size_t end)
     {
+        init(items, length, bytes_per_item, begin, end);
     }
 
+    /**
+     * Copies from an ItemArray instance.
+     *  @param  src     The source array.
+     */
     ItemArray(const ItemArray& src)
     {
         m_managed = true;
@@ -93,7 +91,15 @@ public:
         std::memcpy(m_items, &src.m_items[src.m_bytes_per_item * src.m_begin], size);
     }
 
-    void set(uint8_t* items, size_t length, size_t bytes_per_item, size_t begin, size_t end)
+    /**
+     * Initializes with an external array.
+     *  @param  items   The pointer to the external array.
+     *  @param  length  The number of items in the external array.
+     *  @param  bytes_per_item  The number of bytes per item.
+     *  @param  begin   The index number of the first item.
+     *  @param  end     The index number of the next to the last item.
+     */
+    void init(uint8_t* items, size_t length, size_t bytes_per_item, size_t begin, size_t end)
     {
         m_managed = false;
         m_begin = begin;
@@ -103,24 +109,44 @@ public:
         m_items = items;
     }
 
+    /**
+     * Destructs the instance.
+     */
     virtual ~ItemArray()
     {
         if (m_managed && m_items != nullptr) {
             delete[] m_items;
         }
-        m_items = nullptr;
         m_begin = 0;
         m_end = 0;
+        m_length = 0;
+        m_bytes_per_item = 0;
+        m_items = nullptr;
     }
 
-    Item& operator[](size_t i)
+    /**
+     * Obtains the pointer to the item.
+     *  @param  i   The index number of the item.
+     *  @return     The pointer to the item.
+     */
+    uint8_t* operator[](size_t i)
     {
-        return *reinterpret_cast<Item*>(m_items + m_bytes_per_item * (m_begin + i));
+        return m_items + m_bytes_per_item * (m_begin + i);
     }
 
-    const Item& operator[](size_t i) const
+    /**
+     * Obtains the pointer to the item.
+     *  @param  i   The index number of the item.
+     *  @return     The pointer to the item.
+     */
+    const uint8_t* operator[](size_t i) const
     {
-        return *reinterpret_cast<const Item*>(m_items + m_bytes_per_item * (m_begin + i));
+        return m_items + m_bytes_per_item * (m_begin + i);
+    }
+
+    size_t size() const
+    {
+        return m_end - m_begin;
     }
 
     size_t length() const
@@ -139,46 +165,64 @@ public:
     }
 };
 
-void merge(ItemArray A[], size_t left, size_t mid, size_t right, spdlog::logger& logger)
+size_t merge(ItemArray A[], size_t left, size_t mid, size_t right, std::vector<char> flags[], spdlog::logger& logger)
 {
+    size_t num_deleted = 0;
+
+    // Copy left and right item arrays to L and R.
     ItemArray L = A[left];
     ItemArray R = A[mid];
 
+    // The item array to which items in the two arrays are merged.
     ItemArray& M = A[left];
+
+    // Merge the two item arrays L and R (similarly to merge sort).
     size_t i = 0, j = 0, k = 0;
     size_t bytes_per_item = L.bytes_per_item();
     size_t bytes_per_bucket = bytes_per_item - sizeof(uint64_t);
     while (i < L.length() && j < R.length()) {
-        int cmp = std::memcmp(L[i].bucket, R[j].bucket, bytes_per_bucket);
+        const uint8_t* lb = L[i] + sizeof(uint64_t);
+        const uint8_t* rb = R[j] + sizeof(uint64_t);
+        int cmp = std::memcmp(lb, rb, bytes_per_bucket);
         if (cmp < 0) {
-            std::memcpy(&M[k++], &L[i++], bytes_per_item);
+            std::memcpy(M[k++], L[i++], bytes_per_item);
         } else if (cmp > 0) {
-            std::memcpy(&M[k++], &R[j++], bytes_per_item);
+            std::memcpy(M[k++], R[j++], bytes_per_item);
         } else {
-            logger.info("Merge: {} {}", id_to_string(L[i].id), id_to_string(R[j].id));
-            std::memcpy(&M[k++], &L[i++], bytes_per_item);
+#ifdef  DEBUG_MERGE
+            logger.info("Merge: {} {}", IndexReader::repr_id(L[i]), IndexReader::repr_id(R[j]));
+#endif/*DEBUG_MERGE*/
+            std::memcpy(M[k++], L[i++], bytes_per_item);
+            flags[IndexReader::group_number(R[j])][IndexReader::item_number(R[j])] = 'D';
+            ++num_deleted;
             ++j;
         }
     }
 
+    // Copy remaining items in L to M.
     while (i < L.length()) {
-        std::memcpy(&M[k++], &L[i++], bytes_per_item);
+        std::memcpy(M[k++], L[i++], bytes_per_item);
     }
+    // Copy remaining items in R to M.
     while (j < R.length()) {
-        std::memcpy(&M[k++], &R[j++], bytes_per_item);
+        std::memcpy(M[k++], R[j++], bytes_per_item);
     }
 
+    // Set the number of items in the merged array.
     M.set_number_of_items(k);
+    return num_deleted;
 }
 
-void unique(ItemArray A[], size_t left, size_t right, spdlog::logger& logger)
+size_t unique(ItemArray A[], size_t left, size_t right, std::vector<char> flags[], spdlog::logger& logger)
 {
+    size_t num_deleted = 0;
     if (left + 1 < right) {
         size_t mid = (left + right) / 2;
-        unique(A, left, mid, logger);
-        unique(A, mid, right, logger);
-        merge(A, left, mid, right, logger);
+        num_deleted += unique(A, left, mid, flags, logger);
+        num_deleted += unique(A, mid, right, flags, logger);
+        num_deleted += merge(A, left, mid, right, flags, logger);
     }
+    return num_deleted;
 }
 
 int merge_index(
@@ -189,25 +233,54 @@ int merge_index(
     int end
     )
 {
+    spdlog::stopwatch sw_merge;
     const size_t G = sources.size();
 
-    logger.info("Merge indices");
     logger.info("begin: {}", start);
     logger.info("end: {}", end);
     for (size_t g = 0; g < G; ++g) {
         logger.info("sources[{}]: {}", g, sources[g]);
     }
 
+    // Load the flag files.
+    std::vector<char> flags[G];
+    size_t num_active_start = 0, num_overall_total_items = 0;
+    for (size_t g = 0; g < G; ++g) {
+        std::string filename = sources[g] + std::string(".dup");
+        std::string msg = flag_load(filename, flags[g]);
+        if (!msg.empty()) {
+            logger.critical("{}", msg);
+            return 1;
+        }
+        size_t num_active = std::count(flags[g].begin(), flags[g].end(), ' ');
+        size_t num_total = flags[g].size();
+        num_active_start += num_active;
+        num_overall_total_items += num_total;
+        logger.info("{} / {} items in flag file: {}", num_active, num_total, filename);
+    }
+
+    logger.info("Merge {} / {} items in {} groups", num_active_start, num_overall_total_items, G);
+
+    // Loop for each bucket.
+    size_t num_active_before = num_active_start;
     for (int bn = start; bn < end; bn++) {
         spdlog::stopwatch sw_bucket;
 
+        // Loop for each split.
         for (size_t split = SPLIT_BEGIN; split < SPLIT_END; ++split) {
+            spdlog::stopwatch sw;
+
+            // Find the total number of items of all sources.
             size_t begins[G];
             size_t num_active_items = 0, num_total_items = 0;
             size_t bytes_per_bucket = 0;
             for (size_t g = 0; g < G; ++g) {
                 IndexReader reader;
-                reader.open(sources[g], bn, (uint8_t)split, true);
+                std::string msg = reader.open(sources[g], bn, (uint8_t)split, true);
+                if (!msg.empty()) {
+                    logger.critical("{}", msg);
+                    return 1;
+                }
 
                 begins[g] = num_active_items;
                 num_active_items += reader.m_num_active_items;
@@ -218,7 +291,7 @@ int merge_index(
                     bytes_per_bucket = reader.m_bytes_per_bucket;
                 } else {
                     if (bytes_per_bucket != reader.m_bytes_per_bucket) {
-                        logger.error("The number of bytes per bucket {} is inconsistent with {}: {}", reader.m_bytes_per_bucket, bytes_per_bucket, sources[g]);
+                        logger.critical("The number of bytes per bucket {} is inconsistent with {}: {}", reader.m_bytes_per_bucket, bytes_per_bucket, sources[g]);
                         return 1;
                     }
                 }
@@ -226,58 +299,98 @@ int merge_index(
 
             logger.info("[#{}:{:02x}] {} / {} items", bn, split, num_active_items, num_total_items);
 
-            ItemArray indices[G];
+            // Allocate a big item array that concatenates the arrays of all sources.
             const size_t bytes_per_item = sizeof(uint64_t) + bytes_per_bucket;
-            uint8_t *buffer = new uint8_t[bytes_per_item * num_active_items];
+            const size_t size = bytes_per_item * num_active_items;
+            uint8_t *buffer = new uint8_t[size];
+            logger.info("[#{}:{:02x}] Allocate an array for index items ({:.3f} MB)", bn, split, size / (double)1e6);
+
+            // Read item arrays from all sources.
+            ItemArray indices[G];
             for (size_t g = 0; g < G; ++g) {
+                // Read the item array of this source.
                 IndexReader reader;
-                reader.open(sources[g], bn, (uint8_t)split, true);
-                reader.read_all(buffer + bytes_per_item * begins[g]);
-                indices[g].set(
+                std::string msg = reader.open(sources[g], bn, (uint8_t)split, true);
+                if (!msg.empty()) {
+                    logger.critical("{}", msg);
+                    return 1;
+                }
+                if (!reader.read_all(buffer + bytes_per_item * begins[g])) {
+                    logger.critical("Failed to read an item index from {}", sources[g]);
+                    return 1;
+                }
+
+                // Associate the item array with the ItemArray object.
+                ItemArray& index = indices[g];
+                index.init(
                     buffer,
                     num_active_items,
                     bytes_per_item,
                     begins[g],
                     begins[g] + reader.m_num_active_items
                     );
-            }
 
-/*
-            if (split == 0xFF) {
-                for (size_t i = 0; i < num_active_items; ++i) {
-                    uint8_t *begin = buffer + i * bytes_per_item;
-                    uint8_t *end = buffer + (i+1) * bytes_per_item;
-                    std::cout << repr_item(begin, end) << std::endl;
-                }
-            }
-*/
-
-            for (size_t i = 0; i < num_active_items; ++i) {
-                uint8_t *begin = buffer + i * bytes_per_item;
-                if (id_to_string(*reinterpret_cast<uint64_t*>(begin)) == "0:0") {
-                    for (size_t j = 0; j < num_active_items; ++j) {
-                        uint8_t *begin = buffer + j * bytes_per_item;
-                        uint8_t *end = buffer + (j+1) * bytes_per_item;
-                        std::cout << repr_item(begin, end) << std::endl;
-                    }
+                // Set the group number to all items.
+                for (size_t i = 0; i < index.size(); ++i) {
+                    IndexWriter::set_group(index[i], g);
                 }
             }
 
-
-
-            unique(indices, 0, G, logger);
-
-/*
-            if (split == 0xFF) {
-                for (size_t i = indices[0].m_begin; i < indices[0].m_end; ++i) {
-                    uint8_t *begin = indices[0].m_items + i * indices[0].m_bytes_per_item;
-                    uint8_t *end = indices[0].m_items + (i+1) * indices[0].m_bytes_per_item;
-                    std::cout << repr_item(begin, end) << std::endl;                    
-                }
-            }
-*/
+            // Merge item arrays.
+            size_t num_deleted = unique(indices, 0, G, flags, logger);
+            logger.info("[#{}:{:02x}] Completed merging in {:.3f} seconds", bn, split, sw);
         }
+
+        // Count the number of active items.
+        size_t num_active_after = 0;
+        for (size_t g = 0; g < G; ++g) {
+            num_active_after += std::count(flags[g].begin(), flags[g].end(), ' ');
+        }
+
+        // Report statistics.
+        double active_ratio = 0 < num_overall_total_items ? num_active_after / (double)num_overall_total_items : 0.;
+        logger.info(
+            "[#{}] Merge completed: {{"
+            "\"num_active_before\": {}, "
+            "\"num_active_after\": {}, "
+            "\"active_ratio\": {:.05f}, "
+            "\"time\": {:.03f}"
+            "}}",
+            bn,
+            num_active_before,
+            num_active_after,
+            active_ratio,
+            sw_bucket
+            );
+        num_active_before = num_active_after;
     }
+
+    // Save the flag files.
+    size_t num_active_after = 0;
+    for (size_t g = 0; g < G; ++g) {
+        std::string filename = sources[g] + std::string(".dup.merge");
+        std::string msg = flag_save(filename, flags[g]);
+        if (!msg.empty()) {
+            logger.critical("{}", msg);
+            return 1;
+        }
+        logger.info("Save flags to a file: {}", filename);
+        num_active_after += std::count(flags[g].begin(), flags[g].end(), ' ');
+    }
+
+    double active_ratio = 0 < num_overall_total_items ? num_active_after / (double)num_overall_total_items : 0.;
+    logger.info(
+        "Result: {{"
+        "\"num_active_before\": {}, "
+        "\"num_active_after\": {}, "
+        "\"active_ratio\": {:.05f}, "
+        "\"time\": {:.03f}"
+        "}}",
+        num_active_start,
+        num_active_after,
+        active_ratio,
+        sw_merge
+        );
     return 0;
 }
 
@@ -297,7 +410,7 @@ int main(int argc, char *argv[])
         .default_value(40)
         .scan<'d', int>();
     program.add_argument("-o", "--output").metavar("OUTPUT")
-        .help("basename for index ({OUTPUT}.idx.#####) and flag ({OUTPUT}.dup) files")
+        .help("basename for the log file ({OUTPUT}.log)")
         .nargs(1)
         .required();
     program.add_argument("-l", "--log-level-console")
@@ -329,8 +442,7 @@ int main(int argc, char *argv[])
     const auto end = program.get<int>("end");
     const auto output = program.get<std::string>("output");
     const auto sources = program.get<std::vector<std::string>>("sources");
-    const std::string flagfile = output + std::string(".dup");
-    const std::string logfile = output + std::string(".log.txt");
+    const std::string logfile = output + std::string(".log");
 
     // Initialize the console logger.
     auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
@@ -349,4 +461,3 @@ int main(int argc, char *argv[])
     // Perform index merging.
     return merge_index(logger, sources, output, begin, end);
 }
-

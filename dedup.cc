@@ -421,14 +421,6 @@ public:
                     continue;
                 }
 
-                if (cur->i == 1937) {
-                    auto tmp = cur;
-                    for (size_t j = 0; j < 10; ++j) {
-                        std::cout << tmp->repr() << std::endl;
-                        ++tmp;
-                    }
-                }
-	    
                 // Find the next item that has a different bucket from the current one.
                 auto next = cur + 1;
                 while (next != m_items.end() && *cur == *next) {

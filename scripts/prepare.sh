@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Set the timezone to Japan.
+sudo timedatectl set-timezone Japan
+
 # Install necessary packages.
 sudo yum install lvm2 g++ cmake tbb tbb-devel parallel
 
@@ -12,7 +15,7 @@ sudo mkdir /data
 sudo mount /dev/ssdgroup/lv0 /data
 sudo chmod 777 /data
 
-# Mount S3 at /s3 .
+# Mount S3 at /s3 . (don't forget to set an appropriate IAM role in advance)
 wget https://s3.amazonaws.com/mountpoint-s3-release/latest/x86_64/mount-s3.rpm
 sudo yum install ./mount-s3.rpm
 sudo mkdir /s3

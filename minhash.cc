@@ -25,6 +25,7 @@ SOFTWARE.
 #define USE_XXHASH
 
 #include <cstdint>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -193,7 +194,22 @@ int main(int argc, char *argv[])
 
         } catch (const json::parse_error& e) {
             es << "ERROR (at line " << num_items+1 << "): " << e.what() << std::endl;
-            es << line << std::endl;
+
+            {
+                std::time_t now = std::time(nullptr);
+
+                // Write the error message to a file "*.err"
+                const std::string err_filename = filename + std::string(".err");
+                std::ofstream ofs(err_filename, std::ios::app);
+                if (ofs.fail()) {
+                    es << "ERROR: Failed to open " << err_filename << std::endl;
+                    return 1;
+                }
+                ofs <<
+                    std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S") <<
+                    " ERROR (at line " << num_items+1 << "): " << e.what() << std::endl;
+                ofs << line << std::endl;
+            }
             // This exception is usually caused by an ill-formed UTF-8 byte
             // sequence. We resume the process by leaving the document empty.
             // This treatment ensures that the number of items in the hash

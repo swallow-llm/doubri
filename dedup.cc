@@ -105,7 +105,8 @@ struct Element {
      * to ensure the stability of element order. This treatment is necessary
      * for the consistency of duplicates recognized across different bucket
      * arrays. Calling std::sort() will sort elements in dictionary order of
-     * buckets and descending order of item numbers.
+     * buckets and descending order of item numbers. Notice that `(order < 0)`
+     * is not a bug because buckets are sorted in descending order.
      *
      *  @param  x   An element.
      *  @param  y   Another element.
@@ -114,7 +115,7 @@ struct Element {
     friend bool operator>(const Element& x, const Element& y)
     {
         auto order = std::memcmp(x.ptr(), y.ptr(), s_bytes_per_bucket);
-        return order == 0 ? (x.i > y.i) : (order > 0);
+        return order == 0 ? (x.i > y.i) : (order < 0);
     }
 
     /**
@@ -507,6 +508,8 @@ public:
         spdlog::stopwatch sw;
         size_t num_active_before = std::count(m_flags.begin(), m_flags.end(), ' ');
 
+        m_logger.info("reverse: {}", reverse);
+
         // Deduplication for each bucket number.
         for (size_t bn = m_begin; bn < m_end; ++bn) {
             m_logger.info("Deduplication for #{}", bn);
@@ -646,7 +649,7 @@ int main(int argc, char *argv[])
     argparse::ArgumentParser program("doubri-dedup", __DOUBRI_VERSION__);
     program.add_description("Read MinHash buckets from files, deduplicate items, and build bucket indices.");
     program.add_argument("-r", "--reverse")
-        .help("keep older duplicated items (newer items, by default)")
+        .help("keep newer duplicated items (older items, by default)")
         .default_value(false)
         .flag();
     program.add_argument("-l", "--log-level-console")

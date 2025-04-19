@@ -1,6 +1,10 @@
 #!/bin/bash
 
 N=$1
+REVERSE=""
+if [ "$2" = "reverse" ];then
+    REVERSE="-r"
+fi
 WORK=/data/test/enron_spam/$N
 DIRS=($(seq -f "%02g" 0 $((N-1))))
 
@@ -22,13 +26,13 @@ done
 
 # Deduplicate all text at once.
 mkdir -p $WORK/dedup/all
-find $WORK/minhash/ -name '*.mh' | sort | ../../build/doubri-dedup -l info -L info $WORK/dedup/all/dedup
-cat $WORK/dedup/all/dedup.dup | ./evaluate-flag.py enron_spam_data-sim.txt > result-all-flag.txt
+find $WORK/minhash/ -name '*.mh' | sort | ../../build/doubri-dedup $REVERSE -l info -L info $WORK/dedup/all/dedup
+cat $WORK/dedup/all/dedup.dup | ./evaluate-flag.py $REVERSE > result-all-flag$REVERSE.txt
 
 # Deduplicate text for each group.
 for DIR in "${DIRS[@]}"; do
     mkdir -p $WORK/dedup/$DIR
-    find $WORK/minhash/$DIR -name '*.mh' | sort | ../../build/doubri-dedup -l info -L info $WORK/dedup/$DIR/dedup
+    find $WORK/minhash/$DIR -name '*.mh' | sort | ../../build/doubri-dedup $REVERSE -l info -L info $WORK/dedup/$DIR/dedup
 done
 
 # Merge indices
@@ -36,5 +40,5 @@ ARGS=()
 for DIR in "${DIRS[@]}"; do
     ARGS+=($WORK/dedup/$DIR/dedup)
 done
-../../build/doubri-merge -o $WORK/dedup/merge -l info -L info ${ARGS[*]}
-find $WORK/dedup/ -name 'dedup.dup.merge' | sort | xargs cat | ./evaluate-flag.py enron_spam_data-sim.txt > result-merge-flag-$N.txt
+../../build/doubri-merge $REVERSE -o $WORK/dedup/merge -l info -L info ${ARGS[*]}
+find $WORK/dedup/ -name 'dedup.dup.merge' | sort | xargs cat | ./evaluate-flag.py $REVERSE > result-merge-flag-$N$REVERSE.txt

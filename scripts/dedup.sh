@@ -9,7 +9,7 @@ find /s3/CC-MAIN-$YEAR-* -name '*.jsonl.gz' | parallel --progress 'zcat {} | ./b
 
 # Deduplicate.
 mkdir -p /data/dedup/$YEAR
-find /data/minhash/CC-MAIN-$YEAR-* -name '*.mh' | sort | ./build/doubri-dedup -l info -L info /data/dedup/$YEAR/CC-MAIN-$YEAR
+find /data/minhash/CC-MAIN-$YEAR-* -name '*.mh' | sort | ./build/doubri-dedup -r -l info -L info /data/dedup/$YEAR/CC-MAIN-$YEAR
 
 # Upload the deduplication result to S3
 aws s3 cp --recursive /data/dedup/$YEAR s3://swallow-corpus-cc/dedup/$YEAR/

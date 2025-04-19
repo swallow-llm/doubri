@@ -165,6 +165,7 @@ public:
     }
 };
 
+template <bool reverse>
 size_t merge(ItemArray A[], size_t left, size_t mid, size_t right, std::vector<char> flags[], spdlog::logger& logger)
 {
     size_t num_deleted = 0;
@@ -189,13 +190,22 @@ size_t merge(ItemArray A[], size_t left, size_t mid, size_t right, std::vector<c
         } else if (cmp > 0) {
             std::memcpy(M[k++], R[j++], bytes_per_item);
         } else {
+            if constexpr (reverse) {
 #ifdef  DEBUG_MERGE
-            logger.info("Merge: {} {}", IndexReader::repr_id(L[i]), IndexReader::repr_id(R[j]));
+                logger.info("Merge: {} {}", IndexReader::repr_id(R[j]), IndexReader::repr_id(L[i]));
 #endif/*DEBUG_MERGE*/
-            std::memcpy(M[k++], L[i++], bytes_per_item);
-            flags[IndexReader::group_number(R[j])][IndexReader::item_number(R[j])] = 'D';
+                std::memcpy(M[k++], R[j++], bytes_per_item);
+                flags[IndexReader::group_number(L[i])][IndexReader::item_number(L[i])] = 'D';
+                ++i;
+            } else {
+#ifdef  DEBUG_MERGE
+                logger.info("Merge: {} {}", IndexReader::repr_id(L[i]), IndexReader::repr_id(R[j]));
+#endif/*DEBUG_MERGE*/
+                std::memcpy(M[k++], L[i++], bytes_per_item);
+                flags[IndexReader::group_number(R[j])][IndexReader::item_number(R[j])] = 'D';
+                ++j;
+            }
             ++num_deleted;
-            ++j;
         }
     }
 
@@ -213,14 +223,15 @@ size_t merge(ItemArray A[], size_t left, size_t mid, size_t right, std::vector<c
     return num_deleted;
 }
 
+template <bool reverse>
 size_t unique(ItemArray A[], size_t left, size_t right, std::vector<char> flags[], spdlog::logger& logger)
 {
     size_t num_deleted = 0;
     if (left + 1 < right) {
         size_t mid = (left + right) / 2;
-        num_deleted += unique(A, left, mid, flags, logger);
-        num_deleted += unique(A, mid, right, flags, logger);
-        num_deleted += merge(A, left, mid, right, flags, logger);
+        num_deleted += unique<reverse>(A, left, mid, flags, logger);
+        num_deleted += unique<reverse>(A, mid, right, flags, logger);
+        num_deleted += merge<reverse>(A, left, mid, right, flags, logger);
     }
     return num_deleted;
 }
@@ -229,13 +240,15 @@ int merge_index(
     spdlog::logger& logger,
     const std::vector<std::string>& sources,
     const std::string& output,
-    int start,
-    int end
+    const bool reverse,
+    const int start,
+    const int end
     )
 {
     spdlog::stopwatch sw_merge;
     const size_t G = sources.size();
 
+    logger.info("reverse: {}", reverse);
     logger.info("begin: {}", start);
     logger.info("end: {}", end);
     for (size_t g = 0; g < G; ++g) {
@@ -337,7 +350,12 @@ int merge_index(
             }
 
             // Merge item arrays.
-            size_t num_deleted = unique(indices, 0, G, flags, logger);
+            size_t num_deleted = 0;
+            if (reverse) {
+                num_deleted = unique<true>(indices, 0, G, flags, logger);
+            } else {
+                num_deleted = unique<false>(indices, 0, G, flags, logger);
+            }
             logger.info("[#{}:{:02x}] Completed merging in {:.3f} seconds", bn, split, sw);
 
             // Free the big array.
@@ -402,12 +420,16 @@ int main(int argc, char *argv[])
     // Build a command-line parser.
     argparse::ArgumentParser program("doubri-merge", __DOUBRI_VERSION__);
     program.add_description("Merge bucket indices to deduplicate items across different groups.");
+    program.add_argument("-r", "--reverse")
+        .help("keep newer duplicated items (older items, by default)")
+        .default_value(false)
+        .flag();
     program.add_argument("-s", "--start").metavar("START")
         .help("start number of buckets")
         .nargs(1)
         .default_value(0)
         .scan<'d', int>();
-    program.add_argument("-r", "--end").metavar("END")
+    program.add_argument("-e", "--end").metavar("END")
         .help("end number of buckets (number of buckets when START = 0)")
         .nargs(1)
         .default_value(40)
@@ -441,6 +463,7 @@ int main(int argc, char *argv[])
     }
 
     // Retrieve parameters.
+    const auto reverse = program.get<bool>("reverse");
     const auto begin = program.get<int>("start");
     const auto end = program.get<int>("end");
     const auto output = program.get<std::string>("output");
@@ -462,5 +485,5 @@ int main(int argc, char *argv[])
     logger.flush_on(file_log_level);
 
     // Perform index merging.
-    return merge_index(logger, sources, output, begin, end);
+    return merge_index(logger, sources, output, reverse, begin, end);
 }

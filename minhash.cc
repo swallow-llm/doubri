@@ -112,7 +112,7 @@ int main(int argc, char *argv[])
         .nargs(1)
         .default_value(20)
         .scan<'d', int>();
-    program.add_argument("-s", "--start").metavar("START")
+    program.add_argument("-e", "--start").metavar("START")
         .help("start number of buckets")
         .nargs(1)
         .default_value(0)

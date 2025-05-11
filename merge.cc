@@ -369,18 +369,26 @@ int merge_index(
         }
 
         // Report statistics.
-        double active_ratio = 0 < num_overall_total_items ? num_active_after / (double)num_overall_total_items : 0.;
+        double active_ratio_before = 0 < num_overall_total_items ? num_active_before / (double)num_overall_total_items : 0.;
+        double active_ratio_after = 0 < num_overall_total_items ? num_active_after / (double)num_overall_total_items : 0.;
+        double detection_ratio = 0 < num_active_before ? (num_active_before - num_active_after) / (double)num_active_before : 0.;
         logger.info(
-            "[#{}] Merge completed: {{"
+            "[#{}] Merge completed: {{"            
+            "\"num_total_items\": {}, "
             "\"num_active_before\": {}, "
             "\"num_active_after\": {}, "
-            "\"active_ratio\": {:.05f}, "
+            "\"active_ratio_before\": {:.05f}, "
+            "\"active_ratio_after\": {:.05f}, "
+            "\"detection_ratio\": {:.05f}, "
             "\"time\": {:.03f}"
             "}}",
             bn,
+            num_overall_total_items,
             num_active_before,
             num_active_after,
-            active_ratio,
+            active_ratio_before,
+            active_ratio_after,
+            detection_ratio,
             sw_bucket
             );
         num_active_before = num_active_after;
@@ -399,17 +407,25 @@ int merge_index(
         num_active_after += std::count(flags[g].begin(), flags[g].end(), ' ');
     }
 
-    double active_ratio = 0 < num_overall_total_items ? num_active_after / (double)num_overall_total_items : 0.;
+    double active_ratio_before = 0 < num_overall_total_items ? num_active_start / (double)num_overall_total_items : 0.;
+    double active_ratio_after = 0 < num_overall_total_items ? num_active_after / (double)num_overall_total_items : 0.;
+    double detection_ratio = 0 < num_active_start ? (num_active_start - num_active_after) / (double)num_active_start : 0.;
     logger.info(
         "Result: {{"
+        "\"num_total_items\": {}, "
         "\"num_active_before\": {}, "
         "\"num_active_after\": {}, "
-        "\"active_ratio\": {:.05f}, "
+        "\"active_ratio_before\": {:.05f}, "
+        "\"active_ratio_after\": {:.05f}, "
+        "\"detection_ratio\": {:.05f}, "
         "\"time\": {:.03f}"
         "}}",
+        num_overall_total_items,
         num_active_start,
         num_active_after,
-        active_ratio,
+        active_ratio_before,
+        active_ratio_after,
+        detection_ratio,
         sw_merge
         );
     return 0;

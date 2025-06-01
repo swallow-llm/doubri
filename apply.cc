@@ -1,7 +1,7 @@
 /*
     Filter active items.
 
-Copyright (c) 2023-2024, Naoaki Okazaki
+Copyright (c) 2023-2025, Naoaki Okazaki
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -37,17 +37,21 @@ int main(int argc, char *argv[])
 
     // The command-line parser.
     argparse::ArgumentParser program("doubri-apply", __DOUBRI_VERSION__);
-    program.add_description("Read text (in JSONL format) from STDIN and output non-duplicate documents.");
+    program.add_description("Read documents (in JSONL format) from STDIN and output non-duplicate ones to STDOUT.");
     program.add_argument("-f", "--flag").metavar("FLAG")
-        .help("specify a flag file")
+        .help("specify a flag file marking duplicated documents with 'D'")
         .nargs(1)
         .required();
     program.add_argument("-s", "--source").metavar("SRC")
-        .help("specify a file storing a list of source MinHash files")
+        .help("specify a file storing the list of source MinHash files for the flag file")
         .nargs(1)
         .required();
     program.add_argument("target").metavar("TARGET")
-        .help("specify the MinHash file that were geenerated for the input JSONL file");
+        .help("specify the MinHash filename corresponding to the input JSONL file (this file does not need to exist)");
+    program.add_argument("-d", "--strip")
+        .help("strip directory name from source MinHash files (path) when finding the target")
+        .default_value(false)
+        .flag();
     program.add_argument("-v", "--verbose")
         .help("output debug information to STDERR (disabled, by default)")
         .default_value(false)
@@ -67,6 +71,7 @@ int main(int argc, char *argv[])
     const auto flag_file = program.get<std::string>("flag");
     const auto src_file = program.get<std::string>("source");
     const auto target_file = program.get<std::string>("target");
+    const auto strip = program.get<bool>("strip");
     const auto verbose = program.get<bool>("verbose");
 
     // Open the flag file.
@@ -76,7 +81,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Check the file size (= total number of items in the source).
+    // Check the file size (== total number of items in the source).
     iff.seekg(0, std::ios_base::end);
     uint64_t num_total_items = iff.tellg();
     iff.seekg(0, std::ios_base::beg);
@@ -112,7 +117,15 @@ int main(int argc, char *argv[])
 
         // Obtain the number of items and source MinHash file.
         uint64_t num_items = std::stoll(std::string(line, 0, pos));
-        const std::string source(line, pos+1);
+        std::string source(line, pos+1);
+
+        // Strip the directory name from the source path.
+        if (strip) {
+            const auto p = source.rfind('/');
+            if (p != source.npos) {
+                source = std::string(source, p+1);
+            }
+        }
 
         // Record the range for the target.
         if (source == target_file) {
@@ -159,20 +172,8 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // Output debug information.
-    if (verbose) {
-        es << "flag: " << flag_file << std::endl;
-        es << "source: " << src_file << std::endl;
-        es << "target: " << target_file << std::endl;
-        es << "begin: " << begin << std::endl;
-        es << "size: " << size << std::endl;
-        for (auto it = flags.begin(); it != flags.end(); ++it) {
-            es << *it;
-        }
-        es << std::endl;
-    }
-    
     // One JSON object per line.
+    uint64_t num_active = 0;
     uint64_t i = 0;
     for (;; ++i) {
         // Read a line from STDIN.
@@ -190,9 +191,24 @@ int main(int argc, char *argv[])
         // Output the line if the flag is true ('1').
         if (flags[i] == ' ') {
             os << line << std::endl;
+            ++num_active;
         }
     }
 
+    // Output debug information.
+    if (verbose) {
+        es << "flag: " << flag_file << std::endl;
+        es << "source: " << src_file << std::endl;
+        es << "target: " << target_file << std::endl;
+        es << "begin: " << begin << std::endl;
+        es << "size: " << size << std::endl;
+        es << "num_active: " << num_active << std::endl;
+        for (auto it = flags.begin(); it != flags.end(); ++it) {
+            es << *it;
+        }
+        es << std::endl;
+    }
+    
     if (i < size) {
         es << "ERROR: STDIN is shorter than " << size << " lines" << std::endl;
         return 1;

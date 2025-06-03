@@ -7,8 +7,8 @@ sudo timedatectl set-timezone Japan
 sudo yum install lvm2 g++ cmake tbb tbb-devel parallel
 
 # Prepare SSD drive and mount at /data .
-sudo pvcreate /dev/nvme1n1 /dev/nvme2n1 # /dev/nvme3n1 /dev/nvme4n1
-sudo vgcreate ssdgroup /dev/nvme1n1 /dev/nvme2n1 # /dev/nvme3n1 /dev/nvme4n1
+sudo pvcreate /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1
+sudo vgcreate ssdgroup /dev/nvme1n1 /dev/nvme2n1 /dev/nvme3n1 /dev/nvme4n1
 sudo lvcreate -l 100%FREE -n lv0 ssdgroup
 sudo mkfs -t ext4 /dev/ssdgroup/lv0
 sudo mkdir /data

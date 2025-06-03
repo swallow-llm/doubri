@@ -18,8 +18,11 @@ target_compile_options(doubri-merge PUBLIC)
 add_executable(doubri-similarity similarity.cc)
 target_compile_options(doubri-similarity PUBLIC)
 
-add_executable(doubri-apply apply.cc)
-target_compile_options(doubri-apply PUBLIC)
+add_executable(doubri-apply-whole apply-whole.cc)
+target_compile_options(doubri-apply-whole PUBLIC)
+
+add_executable(doubri-apply-each apply-each.cc)
+target_compile_options(doubri-apply-each PUBLIC)
 
 # OneTBB
 find_package(TBB REQUIRED)

@@ -36,7 +36,7 @@ int main(int argc, char *argv[])
     std::ostream& es = std::cerr;
 
     // The command-line parser.
-    argparse::ArgumentParser program("doubri-apply", __DOUBRI_VERSION__);
+    argparse::ArgumentParser program("doubri-apply-each", __DOUBRI_VERSION__);
     program.add_description("Read documents (in JSONL format) from STDIN and output non-duplicate ones to STDOUT.");
     program.add_argument("-f", "--flag").metavar("FLAG")
         .help("specify a flag file marking duplicated documents with 'D'")
